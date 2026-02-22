@@ -168,6 +168,7 @@ const Settings = () => {
       max_trade_duration_seconds: Math.max(0, Math.round((maxTradeDurationMin || 0) * 60)),
       risk_per_trade: riskPerTrade,
       enable_risk_based_lots: enableRiskBasedLots,
+    });
     setSaving(false);
   };
 
