@@ -7,9 +7,12 @@ RUN apt-get update && apt-get install -y \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Use backend's full requirements (MDS reuses dhan_api, config, database, etc.)
-COPY backend/app/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Install backend deps (shared modules: dhan_api, config, database, etc.)
+COPY backend/app/requirements.txt ./requirements-backend.txt
+
+# Install MDS-specific deps (asyncpg, fastapi, uvicorn, etc.)
+COPY market-data-service/requirements.txt ./requirements-mds.txt
+RUN pip install --no-cache-dir -r requirements-backend.txt -r requirements-mds.txt
 
 # Copy backend app code first (shared modules)
 COPY backend/app/ .
