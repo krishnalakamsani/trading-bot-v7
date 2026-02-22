@@ -42,6 +42,7 @@ const Settings = () => {
     Math.round((config.max_trade_duration_seconds || 0) / 60)
   );
   const [riskPerTrade, setRiskPerTrade] = useState(config.risk_per_trade || 0);
+  const [enableRiskBasedLots, setEnableRiskBasedLots] = useState(config.enable_risk_based_lots || false);
 
   // Strategy Parameters
   const [indicatorType, setIndicatorType] = useState(config.indicator_type || "score_mds");
@@ -111,6 +112,7 @@ const Settings = () => {
       setTargetPoints(config?.target_points || 0);
       setMaxTradeDurationMin(Math.round((config?.max_trade_duration_seconds || 0) / 60));
       setRiskPerTrade(config?.risk_per_trade || 0);
+      setEnableRiskBasedLots(config?.enable_risk_based_lots || false);
 
       setIndicatorType(config?.indicator_type || "score_mds");
       // SuperTrend params are preserved from backend config, UI not editable here.
@@ -165,7 +167,7 @@ const Settings = () => {
       target_points: targetPoints,
       max_trade_duration_seconds: Math.max(0, Math.round((maxTradeDurationMin || 0) * 60)),
       risk_per_trade: riskPerTrade,
-    });
+      enable_risk_based_lots: enableRiskBasedLots,
     setSaving(false);
   };
 
@@ -452,20 +454,18 @@ const Settings = () => {
   };
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="min-h-screen" style={{ background: "var(--bg-base)" }}>
       {/* Header */}
-      <div className="bg-white border-b border-gray-200 p-4 lg:p-6">
+      <div className="border-b p-4 lg:p-5" style={{ background: "var(--bg-card)", borderColor: "var(--border)" }}>
         <div className="max-w-6xl mx-auto flex items-center gap-4">
-          <Button
+          <button
             onClick={() => navigate("/")}
-            variant="ghost"
-            size="sm"
-            className="rounded-sm"
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md btn-active"
+            style={{ background: "var(--bg-inset)", color: "var(--text-secondary)", border: "1px solid var(--border)" }}
           >
-            <ArrowLeft className="w-4 h-4 mr-2" />
-            Back
-          </Button>
-          <h1 className="text-2xl font-bold">Settings</h1>
+            <ArrowLeft className="w-3.5 h-3.5" /> Back
+          </button>
+          <h1 className="text-xl font-bold" style={{ fontFamily: "Syne", color: "var(--text-primary)" }}>Settings</h1>
         </div>
       </div>
 
@@ -487,10 +487,10 @@ const Settings = () => {
           </TabsList>
 
           {/* API Credentials Tab */}
-          <TabsContent value="credentials" className="space-y-4 mt-6 bg-white p-6 rounded-lg border border-gray-200">
-            <div className="p-3 bg-amber-50 border border-amber-200 rounded-sm text-xs text-amber-800">
-              <strong>Note:</strong> Dhan access token expires daily. Update it
-              here each morning before trading.
+          <TabsContent value="credentials" className="space-y-4 mt-4">
+            <div className="p-6 rounded-lg" style={{ background: "var(--bg-card)", border: "1px solid var(--border)" }}>
+            <div className="p-3 rounded-md text-xs mb-4" style={{ background: "var(--warning-dim)", border: "1px solid rgba(255,184,48,0.2)", color: "var(--warning)" }}>
+              <strong>Note:</strong> Dhan access token expires daily. Update it here each morning before trading.
             </div>
 
             <div className="space-y-3">
@@ -533,16 +533,8 @@ const Settings = () => {
               </div>
 
               <div className="flex items-center justify-between pt-2">
-                <span
-                  className={`text-xs ${
-                    config.has_credentials
-                      ? "text-emerald-600"
-                      : "text-amber-600"
-                  }`}
-                >
-                  {config.has_credentials
-                    ? "✓ Credentials configured"
-                    : "⚠ No credentials set"}
+                <span style={{ fontSize: "0.75rem", color: config.has_credentials ? "var(--accent)" : "var(--warning)" }}>
+                  {config.has_credentials ? "✓ Credentials configured" : "⚠ No credentials set"}
                 </span>
                 <Button
                   onClick={handleSaveCredentials}
@@ -557,182 +549,150 @@ const Settings = () => {
               </div>
             </div>
 
-            <div className="text-xs text-gray-500 pt-2 border-t border-gray-100">
+            <div className="text-xs pt-2" style={{ color: "var(--text-dim)" }}>
               Get your credentials from{" "}
-              <a
-                href="https://web.dhan.co"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-blue-600 hover:underline"
-              >
+              <a href="https://web.dhan.co" target="_blank" rel="noopener noreferrer" style={{ color: "var(--blue)" }}>
                 web.dhan.co
               </a>{" "}
               → My Profile → DhanHQ Trading APIs
             </div>
+            </div>
           </TabsContent>
 
           {/* Risk Parameters Tab */}
-          <TabsContent value="risk" className="space-y-4 mt-6 bg-white p-6 rounded-lg border border-gray-200">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div>
-                <Label htmlFor="order-qty">Number of Lots</Label>
-                <Input
-                  id="order-qty"
-                  type="number"
-                  min="1"
-                  max="10"
-                  value={orderQty}
-                  onChange={(e) => {
-                    const val = parseInt(e.target.value) || 1;
-                    setOrderQty(Math.min(10, Math.max(1, val)));
-                  }}
-                  className="mt-1 rounded-sm"
-                  data-testid="order-qty-input"
-                />
-                <p className="text-xs text-gray-500 mt-1">
-                  {orderQty} lot = {orderQty * currentIndexInfo.lot_size} qty
-                </p>
+          <TabsContent value="risk" className="space-y-4 mt-4">
+            <div className="p-6 rounded-lg" style={{ background: "var(--bg-card)", border: "1px solid var(--border)" }}>
+
+              {/* ── Position Sizing Toggle ── */}
+              <div className="rounded-lg p-4 mb-5" style={{ background: "var(--bg-inset)", border: "1px solid var(--border)" }}>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>Position Sizing Module</p>
+                    <p className="text-xs mt-0.5" style={{ color: "var(--text-secondary)" }}>
+                      {enableRiskBasedLots
+                        ? "Auto-sizing: lots = Risk Per Trade ÷ (SL × lot size)"
+                        : "Fixed lots: always uses Number of Lots setting"}
+                    </p>
+                  </div>
+                  <Switch
+                    checked={enableRiskBasedLots}
+                    onCheckedChange={setEnableRiskBasedLots}
+                    data-testid="enable-risk-based-lots-switch"
+                  />
+                </div>
+                {enableRiskBasedLots && (
+                  <div className="mt-3 text-xs flex items-center gap-1.5" style={{ color: "var(--warning)" }}>
+                    <span>⚠</span>
+                    <span>Fixed lots ignored. Set Risk Per Trade and Initial SL below.</span>
+                  </div>
+                )}
               </div>
 
-              <div>
-                <Label htmlFor="max-trades">Max Trades/Day</Label>
-                <Input
-                  id="max-trades"
-                  type="number"
-                  value={maxTrades}
-                  onChange={(e) => setMaxTrades(parseInt(e.target.value))}
-                  className="mt-1 rounded-sm"
-                  data-testid="max-trades-input"
-                />
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {/* Number of Lots — greyed when auto-sizing on */}
+                <div style={{ opacity: enableRiskBasedLots ? 0.4 : 1, pointerEvents: enableRiskBasedLots ? "none" : "auto" }}>
+                  <Label htmlFor="order-qty" style={{ color: "var(--text-secondary)" }}>Number of Lots</Label>
+                  <Input id="order-qty" type="number" min="1" max="10" value={orderQty}
+                    onChange={(e) => setOrderQty(Math.min(10, Math.max(1, parseInt(e.target.value) || 1)))}
+                    className="mt-1 rounded-sm" data-testid="order-qty-input" disabled={enableRiskBasedLots} />
+                  <p className="text-xs mt-1" style={{ color: "var(--text-dim)" }}>
+                    {enableRiskBasedLots ? "Ignored when auto-sizing is on" : `${orderQty} lot = ${orderQty * currentIndexInfo.lot_size} qty`}
+                  </p>
+                </div>
+
+                <div>
+                  <Label htmlFor="max-trades" style={{ color: "var(--text-secondary)" }}>Max Trades/Day</Label>
+                  <Input id="max-trades" type="number" value={maxTrades}
+                    onChange={(e) => setMaxTrades(parseInt(e.target.value))}
+                    className="mt-1 rounded-sm" data-testid="max-trades-input" />
+                </div>
+
+                <div>
+                  <Label htmlFor="max-loss" style={{ color: "var(--text-secondary)" }}>Daily Max Loss (₹)</Label>
+                  <Input id="max-loss" type="number" value={maxLoss}
+                    onChange={(e) => setMaxLoss(parseFloat(e.target.value))}
+                    className="mt-1 rounded-sm" data-testid="max-loss-input" />
+                </div>
+
+                <div>
+                  <Label htmlFor="max-loss-per-trade" style={{ color: "var(--text-secondary)" }}>Max Loss Per Trade (₹)</Label>
+                  <Input id="max-loss-per-trade" type="number" min="0" value={maxLossPerTrade}
+                    onChange={(e) => setMaxLossPerTrade(parseFloat(e.target.value))}
+                    className="mt-1 rounded-sm" data-testid="max-loss-per-trade-input" />
+                  <p className="text-xs mt-1" style={{ color: "var(--text-dim)" }}>0 = disabled</p>
+                </div>
+
+                <div>
+                  <Label htmlFor="initial-sl" style={{ color: "var(--text-secondary)" }}>Initial Stop Loss (points)</Label>
+                  <Input id="initial-sl" type="number" min="0" value={initialSL}
+                    onChange={(e) => setInitialSL(parseFloat(e.target.value))}
+                    className="mt-1 rounded-sm" data-testid="initial-sl-input" />
+                  <p className="text-xs mt-1" style={{ color: "var(--text-dim)" }}>0 = disabled</p>
+                </div>
+
+                {/* Risk Per Trade — highlighted when auto-sizing is on */}
+                <div style={enableRiskBasedLots ? { outline: "1px solid var(--accent)", borderRadius: 6, padding: "8px" } : {}}>
+                  <Label htmlFor="risk-per-trade" style={{ color: "var(--text-secondary)" }}>
+                    Risk Per Trade (₹)
+                    {enableRiskBasedLots && <span className="ml-2 text-xs" style={{ color: "var(--accent)" }}>← used for auto-sizing</span>}
+                  </Label>
+                  <Input id="risk-per-trade" type="number" min="0" value={riskPerTrade}
+                    onChange={(e) => setRiskPerTrade(parseFloat(e.target.value))}
+                    className="mt-1 rounded-sm" data-testid="risk-per-trade-input" />
+                  <p className="text-xs mt-1" style={{ color: "var(--text-dim)" }}>
+                    {enableRiskBasedLots ? "Lots = Risk ÷ (SL pts × lot size)" : "0 = uses fixed qty"}
+                  </p>
+                </div>
+
+                <div>
+                  <Label htmlFor="trail-start" style={{ color: "var(--text-secondary)" }}>Trail Start Profit</Label>
+                  <Input id="trail-start" type="number" value={trailStart}
+                    onChange={(e) => setTrailStart(parseFloat(e.target.value))}
+                    className="mt-1 rounded-sm" data-testid="trail-start-input" />
+                  <p className="text-xs mt-1" style={{ color: "var(--text-dim)" }}>Points</p>
+                </div>
+
+                <div>
+                  <Label htmlFor="trail-step" style={{ color: "var(--text-secondary)" }}>Trail Step</Label>
+                  <Input id="trail-step" type="number" value={trailStep}
+                    onChange={(e) => setTrailStep(parseFloat(e.target.value))}
+                    className="mt-1 rounded-sm" data-testid="trail-step-input" />
+                  <p className="text-xs mt-1" style={{ color: "var(--text-dim)" }}>Points</p>
+                </div>
+
+                <div>
+                  <Label htmlFor="target-points" style={{ color: "var(--text-secondary)" }}>Target Points</Label>
+                  <Input id="target-points" type="number" min="0" value={targetPoints}
+                    onChange={(e) => setTargetPoints(parseFloat(e.target.value))}
+                    className="mt-1 rounded-sm" data-testid="target-points-input" />
+                  <p className="text-xs mt-1" style={{ color: "var(--text-dim)" }}>0 = disabled</p>
+                </div>
+
+                <div>
+                  <Label htmlFor="max-trade-duration" style={{ color: "var(--text-secondary)" }}>Max Trade Duration (minutes)</Label>
+                  <Input id="max-trade-duration" type="number" min="0" value={maxTradeDurationMin}
+                    onChange={(e) => setMaxTradeDurationMin(parseInt(e.target.value || 0))}
+                    className="mt-1 rounded-sm" data-testid="max-trade-duration-input" />
+                  <p className="text-xs mt-1" style={{ color: "var(--text-dim)" }}>0 = disabled</p>
+                </div>
               </div>
 
-              <div>
-                <Label htmlFor="max-loss">Daily Max Loss (₹)</Label>
-                <Input
-                  id="max-loss"
-                  type="number"
-                  value={maxLoss}
-                  onChange={(e) => setMaxLoss(parseFloat(e.target.value))}
-                  className="mt-1 rounded-sm"
-                  data-testid="max-loss-input"
-                />
+              <div className="flex justify-end pt-4 mt-2" style={{ borderTop: "1px solid var(--border)" }}>
+                <Button onClick={handleSaveRiskParams} disabled={saving} size="sm"
+                  className="rounded-sm btn-active" data-testid="save-risk-params-btn">
+                  <Save className="w-3 h-3 mr-1" />
+                  {saving ? "Saving..." : "Save Risk Parameters"}
+                </Button>
               </div>
-
-              <div>
-                <Label htmlFor="max-loss-per-trade">Max Loss Per Trade (₹)</Label>
-                <Input
-                  id="max-loss-per-trade"
-                  type="number"
-                  min="0"
-                  value={maxLossPerTrade}
-                  onChange={(e) => setMaxLossPerTrade(parseFloat(e.target.value))}
-                  className="mt-1 rounded-sm"
-                  data-testid="max-loss-per-trade-input"
-                />
-                <p className="text-xs text-gray-500 mt-1">0 = disabled</p>
-              </div>
-
-              <div>
-                <Label htmlFor="initial-sl">Initial Stop Loss (points)</Label>
-                <Input
-                  id="initial-sl"
-                  type="number"
-                  min="0"
-                  value={initialSL}
-                  onChange={(e) => setInitialSL(parseFloat(e.target.value))}
-                  className="mt-1 rounded-sm"
-                  data-testid="initial-sl-input"
-                />
-                <p className="text-xs text-gray-500 mt-1">0 = disabled</p>
-              </div>
-
-              <div>
-                <Label htmlFor="risk-per-trade">Risk Per Trade (₹)</Label>
-                <Input
-                  id="risk-per-trade"
-                  type="number"
-                  min="0"
-                  value={riskPerTrade}
-                  onChange={(e) => setRiskPerTrade(parseFloat(e.target.value))}
-                  className="mt-1 rounded-sm"
-                  data-testid="risk-per-trade-input"
-                />
-                <p className="text-xs text-gray-500 mt-1">0 = uses fixed qty, else auto-sizes position</p>
-              </div>
-
-              <div>
-                <Label htmlFor="trail-start">Trail Start Profit</Label>
-                <Input
-                  id="trail-start"
-                  type="number"
-                  value={trailStart}
-                  onChange={(e) => setTrailStart(parseFloat(e.target.value))}
-                  className="mt-1 rounded-sm"
-                  data-testid="trail-start-input"
-                />
-                <p className="text-xs text-gray-500 mt-1">Points</p>
-              </div>
-
-              <div>
-                <Label htmlFor="trail-step">Trail Step</Label>
-                <Input
-                  id="trail-step"
-                  type="number"
-                  value={trailStep}
-                  onChange={(e) => setTrailStep(parseFloat(e.target.value))}
-                  className="mt-1 rounded-sm"
-                  data-testid="trail-step-input"
-                />
-                <p className="text-xs text-gray-500 mt-1">Points</p>
-              </div>
-
-              <div>
-                <Label htmlFor="target-points">Target Points</Label>
-                <Input
-                  id="target-points"
-                  type="number"
-                  min="0"
-                  value={targetPoints}
-                  onChange={(e) => setTargetPoints(parseFloat(e.target.value))}
-                  className="mt-1 rounded-sm"
-                  data-testid="target-points-input"
-                />
-                <p className="text-xs text-gray-500 mt-1">0 = disabled</p>
-              </div>
-              <div>
-                <Label htmlFor="max-trade-duration">Max Trade Duration (minutes)</Label>
-                <Input
-                  id="max-trade-duration"
-                  type="number"
-                  min="0"
-                  value={maxTradeDurationMin}
-                  onChange={(e) => setMaxTradeDurationMin(parseInt(e.target.value || 0))}
-                  className="mt-1 rounded-sm"
-                  data-testid="max-trade-duration-input"
-                />
-                <p className="text-xs text-gray-500 mt-1">0 = disabled</p>
-              </div>
-            </div>
-
-            <div className="flex justify-end pt-4 border-t border-gray-100">
-              <Button
-                onClick={handleSaveRiskParams}
-                disabled={saving}
-                size="sm"
-                className="rounded-sm btn-active"
-                data-testid="save-risk-params-btn"
-              >
-                <Save className="w-3 h-3 mr-1" />
-                {saving ? "Saving..." : "Save Risk Parameters"}
-              </Button>
             </div>
           </TabsContent>
 
           {/* Strategy Parameters Tab */}
-          <TabsContent value="strategy" className="space-y-4 mt-6 bg-white p-6 rounded-lg border border-gray-200">
-            <div className="space-y-3 p-4 bg-gray-50 rounded-sm border border-gray-100">
-              <div className="text-sm font-medium text-gray-900">Saved Strategies</div>
-              <div className="text-xs text-gray-500">
+          <TabsContent value="strategy" className="space-y-4 mt-4">
+            <div className="p-6 rounded-lg" style={{ background: "var(--bg-card)", border: "1px solid var(--border)" }}>
+            <div className="space-y-3 p-4 rounded-md mb-4" style={{ background: "var(--bg-inset)", border: "1px solid var(--border)" }}>
+              <div className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>Saved Strategies</div>
+              <div className="text-xs" style={{ color: "var(--text-secondary)" }}>
                 Strategy = saved snapshot of settings. Indicator controls entries; sizing/exits are in the Risk tab.
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -746,7 +706,7 @@ const Settings = () => {
                     className="rounded-sm"
                     data-testid="strategy-name-input"
                   />
-                  <p className="text-xs text-gray-500">Saves a snapshot (no credentials)</p>
+                  <p className="text-xs" style={{ color: "var(--text-secondary)" }}>Saves a snapshot (no credentials)</p>
                 </div>
 
                 <div className="space-y-1">
@@ -866,7 +826,7 @@ const Settings = () => {
                 </Button>
               </div>
 
-              <div className="text-xs text-gray-500">
+              <div className="text-xs" style={{ color: "var(--text-dim)" }}>
                 {!canApplyStrategy
                   ? "Stop the bot and close position to apply."
                   : "Apply requires bot stopped and no open position."}
@@ -884,7 +844,7 @@ const Settings = () => {
                       <SelectItem value="score_mds">Score Engine (MDS)</SelectItem>
                   </SelectContent>
                   </Select>
-                  <p className="text-xs text-gray-500">Score Engine uses internal confirmation and MDS telemetry.</p>
+                  <p className="text-xs" style={{ color: "var(--text-secondary)" }}>Score Engine uses internal confirmation and MDS telemetry.</p>
               </div>
 
               <div>
@@ -1007,10 +967,10 @@ const Settings = () => {
               {showFlipAndHtfControls && (
                 <div className="flex items-center justify-between p-3 bg-gray-50 rounded-sm border border-gray-100">
                   <div>
-                    <Label htmlFor="trade-only-on-flip-toggle" className="text-sm font-medium">
+                    <Label htmlFor="trade-only-on-flip-toggle" className="text-sm font-medium" style={{ color: "var(--text-primary)" }}>
                       Trade Only On Flip
                     </Label>
-                    <p className="text-xs text-gray-500">Entry only on SuperTrend flip</p>
+                    <p className="text-xs" style={{ color: "var(--text-secondary)" }}>Entry only on SuperTrend flip</p>
                   </div>
                   <div className="flex items-center gap-2">
                     <span className="text-xs font-medium text-gray-500">Off</span>
@@ -1028,10 +988,10 @@ const Settings = () => {
               {showFlipAndHtfControls && (
                 <div className="flex items-center justify-between p-3 bg-gray-50 rounded-sm border border-gray-100">
                   <div>
-                    <Label htmlFor="htf-filter-toggle" className="text-sm font-medium">
+                    <Label htmlFor="htf-filter-toggle" className="text-sm font-medium" style={{ color: "var(--text-primary)" }}>
                       HTF Filter
                     </Label>
-                    <p className="text-xs text-gray-500">Require higher TF alignment</p>
+                    <p className="text-xs" style={{ color: "var(--text-secondary)" }}>Require higher TF alignment</p>
                   </div>
                   <div className="flex items-center gap-2">
                     <span className="text-xs font-medium text-gray-500">Off</span>
@@ -1090,15 +1050,15 @@ const Settings = () => {
               </div>
             </div>
 
-            <div className="space-y-3 p-4 bg-gray-50 rounded-sm border border-gray-100">
-              <div className="text-sm font-medium text-gray-900">Bypass Market Hours</div>
+            <div className="space-y-3 p-4 rounded-md" style={{ background: "var(--bg-inset)", border: "1px solid var(--border)" }}>
+              <div className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>Bypass Market Hours</div>
 
-              <div className="flex items-center justify-between p-3 bg-white rounded-sm border border-gray-200">
+              <div className="flex items-center justify-between p-3 rounded-md" style={{ background: "var(--bg-card)", border: "1px solid var(--border)" }}>
                 <div>
-                  <Label htmlFor="bypass-market-hours-toggle" className="text-sm font-medium">
+                  <Label htmlFor="bypass-market-hours-toggle" className="text-sm font-medium" style={{ color: "var(--text-primary)" }}>
                     Run Outside Market Hours
                   </Label>
-                  <p className="text-xs text-gray-500">Use with caution (paper testing)</p>
+                  <p className="text-xs" style={{ color: "var(--text-secondary)" }}>Use with caution (paper testing)</p>
                 </div>
                 <div className="flex items-center gap-2">
                   <span className="text-xs font-medium text-gray-500">Off</span>
@@ -1114,19 +1074,19 @@ const Settings = () => {
               </div>
 
               {!canChangeRunContext && (
-                <p className="text-xs text-amber-600">Stop bot and close position to change</p>
+                <p className="text-xs" style={{ color: "var(--warning)" }}>Stop bot and close position to change</p>
               )}
             </div>
 
-            <div className="space-y-3 p-4 bg-gray-50 rounded-sm border border-gray-100">
-              <div className="text-sm font-medium text-gray-900">Paper Replay</div>
+            <div className="space-y-3 p-4 rounded-md" style={{ background: "var(--bg-inset)", border: "1px solid var(--border)" }}>
+              <div className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>Paper Replay</div>
 
-              <div className="flex items-center justify-between p-3 bg-white rounded-sm border border-gray-200">
+              <div className="flex items-center justify-between p-3 rounded-md" style={{ background: "var(--bg-card)", border: "1px solid var(--border)" }}>
                 <div>
-                  <Label htmlFor="paper-replay-enabled" className="text-sm font-medium">
+                  <Label htmlFor="paper-replay-enabled" className="text-sm font-medium" style={{ color: "var(--text-primary)" }}>
                     Enable Replay (Paper Mode)
                   </Label>
-                  <p className="text-xs text-gray-500">Replays historical MDS candles for a selected IST date</p>
+                  <p className="text-xs" style={{ color: "var(--text-secondary)" }}>Replays historical MDS candles for a selected IST date</p>
                 </div>
                 <div className="flex items-center gap-2">
                   <span className="text-xs font-medium text-gray-500">Off</span>
@@ -1170,7 +1130,7 @@ const Settings = () => {
               </div>
             </div>
 
-            <div className="flex justify-end pt-4 border-t border-gray-100">
+            <div className="flex justify-end pt-4" style={{ borderTop: "1px solid var(--border)" }}>
               <Button
                 onClick={handleSaveStrategyParams}
                 disabled={saving}
@@ -1181,6 +1141,7 @@ const Settings = () => {
                 <Save className="w-3 h-3 mr-1" />
                 {saving ? "Saving..." : "Save Strategy Settings"}
               </Button>
+            </div>
             </div>
           </TabsContent>
         </Tabs>
