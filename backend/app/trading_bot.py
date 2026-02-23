@@ -1378,8 +1378,6 @@ class TradingBot:
                 if current_ltp > 0:
                     exit_price = round(float(current_ltp) / 0.05) * 0.05
                     pnl = (exit_price - self.entry_price) * qty
-                    if position_type == 'PE':
-                        pnl = (self.entry_price - exit_price) * qty
                     logger.info(
                         f"[EXIT_SCORE] ✓ Confirmed reversal — closing {position_type} | "
                         f"HTFScore={htf_score:.2f} | PnL=₹{pnl:.2f}"
@@ -2029,6 +2027,15 @@ class TradingBot:
                     while self.current_position is not None:
                         try:
                             ltp = bot_state.get('current_option_ltp') or 0.0
+                            # For SIM positions, simulate option LTP every tick
+                            # (run_loop only simulates on candle close — every 5s)
+                            if self.current_position:
+                                sec_id = self.current_position.get('security_id', '')
+                                if str(sec_id).startswith('SIM_'):
+                                    self._simulate_option_ltp(
+                                        self.current_position.get('index_name', config['selected_index'])
+                                    )
+                                    ltp = bot_state.get('current_option_ltp') or ltp
                             if float(ltp) > 0:
                                 # Step 1: update trailing SL level
                                 await self.check_trailing_sl(float(ltp))
