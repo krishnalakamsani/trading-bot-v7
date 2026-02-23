@@ -1033,13 +1033,9 @@ class TradingBot:
         tick_engine.subscribe(index_name=index_name, candle_interval=candle_interval)
 
         # ── Single dedicated state broadcaster (1s interval) ──────────────────
-        # Replaces all scattered broadcast_state() calls in the loop.
-        # Guarantees frontend always gets a fresh, complete snapshot every second,
-        # regardless of whether a candle fired or not.
         async def _state_heartbeat():
             while self.running:
                 try:
-                    # Update option LTP before broadcasting
                     if self.current_position:
                         sec_id = self.current_position.get('security_id', '')
                         if str(sec_id).startswith('SIM_'):
@@ -1048,6 +1044,12 @@ class TradingBot:
                             )
                         elif self.dhan:
                             await self._update_option_ltp_if_needed()
+
+                        # Always check SL/target after LTP update
+                        ltp = bot_state.get('current_option_ltp', 0.0)
+                        if ltp > 0:
+                            await self.check_tick_sl(ltp)
+
                     await self.broadcast_state()
                 except Exception:
                     pass
@@ -2032,68 +2034,6 @@ class TradingBot:
         except Exception:
             logger.debug("[SL] check_trailing_sl failed after setting entry price")
 
-        # Start a background monitor to ensure trailing SL updates on any LTP changes
-        try:
-            # Cancel any existing trailing task (safety)
-            if getattr(self, '_trailing_task', None) is not None:
-                try:
-                    self._trailing_task.cancel()
-                except Exception:
-                    pass
-
-            async def _trailing_monitor():
-                try:
-                    logger.info(f"[SL] Trailing monitor started for TradeID={trade_id}")
-                    while self.current_position is not None:
-                        try:
-                            ltp = bot_state.get('current_option_ltp') or 0.0
-                            if float(ltp) > 0:
-                                # Step 1: update trailing SL level
-                                await self.check_trailing_sl(float(ltp))
-                                # Step 2: check if LTP has breached the SL/target → exit
-                                exited = await self.check_tick_sl(float(ltp))
-                                if exited:
-                                    break
-                            # Enforce max trade duration from the monitor as well
-                            try:
-                                max_dur = int(config.get('max_trade_duration_seconds', 0) or 0)
-                            except Exception:
-                                max_dur = 0
-                            if max_dur > 0 and self.entry_time_utc:
-                                now = datetime.now(timezone.utc)
-                                elapsed = (now - self.entry_time_utc).total_seconds()
-                                if elapsed >= max_dur:
-                                    # Compute qty and pnl similar to squareoff
-                                    index_name = self.current_position.get('index_name', config['selected_index'])
-                                    index_config = get_index_config(index_name)
-                                    qty = int(self.current_position.get('qty') or 0)
-                                    if qty <= 0:
-                                        qty = config['order_qty'] * index_config['lot_size']
-                                    exit_price = float(ltp or bot_state.get('current_option_ltp') or 0.0)
-                                    pnl = (exit_price - self.entry_price) * qty
-                                    logger.info(
-                                        f"[EXIT] Max duration hit (monitor) | Elapsed={elapsed:.1f}s | LTP={exit_price:.2f} | Entry={self.entry_price:.2f} | MaxDur={max_dur}s"
-                                    )
-                                    try:
-                                        closed = await self.close_position(exit_price, pnl, "Max Duration Hit")
-                                    except Exception:
-                                        closed = False
-                                    if closed:
-                                        break
-                        except asyncio.CancelledError:
-                            break
-                        except Exception:
-                            pass
-                        await asyncio.sleep(1)
-                except asyncio.CancelledError:
-                    pass
-                finally:
-                    logger.info(f"[SL] Trailing monitor stopped for TradeID={trade_id}")
-
-            self._trailing_task = asyncio.create_task(_trailing_monitor())
-        except Exception:
-            logger.debug("[SL] Failed to start trailing monitor task")
-        
         # ONLY set last_signal AFTER position is successfully confirmed open
         self.last_signal = option_type[0].upper() + 'E'  # 'CE' -> 'C', 'PE' -> 'P'
         self.last_signal = 'GREEN' if option_type == 'CE' else 'RED'
