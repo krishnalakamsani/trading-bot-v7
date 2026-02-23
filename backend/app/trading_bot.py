@@ -398,85 +398,6 @@ class TradingBot:
         logger.warning("[ERROR] Dhan API credentials not configured")
         return False
 
-    def _paper_should_use_live_option_quotes(self) -> bool:
-        if bot_state.get('mode') != 'paper':
-            return False
-        if not bool(config.get('paper_use_live_option_quotes', True)):
-            return False
-        if not (config.get('dhan_access_token') and config.get('dhan_client_id')):
-            return False
-        # Never mix live option quotes with replay/synthetic testing.
-        if bool(config.get('paper_replay_enabled', False)):
-            return False
-        # Allow live quotes during market hours OR when bypass is on (manual testing)
-        return bool(is_market_open()) or bool(config.get('bypass_market_hours', False))
-
-    async def _paper_upgrade_sim_position_to_live(self) -> bool:
-        """Try switching a SIM_* paper position to a real option security_id.
-
-        This is only attempted during market hours (when configured).
-        Returns True if upgraded (and current_option_ltp was updated), else False.
-        """
-        if not self._paper_should_use_live_option_quotes():
-            return False
-        if not self.current_position:
-            return False
-
-        security_id = str(self.current_position.get('security_id') or '')
-        if not security_id.startswith('SIM_'):
-            return False
-
-        index_name = str(self.current_position.get('index_name') or config.get('selected_index') or 'NIFTY')
-        strike = int(self.current_position.get('strike') or 0)
-        option_type = str(self.current_position.get('option_type') or '')
-        expiry = str(self.current_position.get('expiry') or '')
-        if not (index_name and strike and option_type and expiry):
-            return False
-
-        if not self.dhan:
-            try:
-                self.initialize_dhan()
-            except Exception:
-                pass
-        if not self.dhan:
-            return False
-
-        try:
-            live_security_id = await self.dhan.get_atm_option_security_id(index_name, strike, option_type, expiry)
-            if not live_security_id:
-                return False
-
-            option_ltp = await self.dhan.get_option_ltp(
-                security_id=live_security_id,
-                strike=strike,
-                option_type=option_type,
-                expiry=expiry,
-                index_name=index_name,
-            )
-            if not option_ltp or float(option_ltp) <= 0:
-                return False
-            option_ltp = round(float(option_ltp) / 0.05) * 0.05
-            option_ltp = round(float(option_ltp), 2)
-
-            # Debug: log SIM->LIVE upgrade quote
-            logger.debug(f"[PAPER] SIM->LIVE option_ltp fetched: SecID={live_security_id} LTP={option_ltp} Index={index_name}")
-
-            self.current_position['security_id'] = str(live_security_id)
-            bot_state['current_position'] = self.current_position
-            bot_state['current_option_ltp'] = option_ltp
-
-            logger.info(
-                f"[PAPER] SIM->LIVE quotes enabled | {index_name} {option_type} {strike} | SecID: {live_security_id} | LTP: {option_ltp}"
-            )
-            try:
-                await self.check_trailing_sl(bot_state['current_option_ltp'])
-            except Exception:
-                logger.debug("[SL] check_trailing_sl failed during SIM->LIVE upgrade")
-            return True
-        except Exception as e:
-            logger.debug(f"[PAPER] SIM->LIVE upgrade failed: {e}")
-            return False
-
     async def _init_paper_replay(self) -> None:
         """Load candle data from DB for after-hours paper replay."""
         try:
@@ -787,12 +708,7 @@ class TradingBot:
 
         # Seed indicators from MDS history so ScoreEngine is warm on start.
         # Skip for dated replay or synthetic paper testing.
-        synthetic_only = (
-            bot_state.get('mode') == 'paper'
-            and bool(config.get('bypass_market_hours', False))
-            and not bool(config.get('paper_replay_enabled', False))
-        )
-        if (not replay_enabled) and (not synthetic_only):
+        if not replay_enabled:
             await self._seed_indicators_from_mds_history()
 
         state_machine.warmed_up()
@@ -1037,17 +953,14 @@ class TradingBot:
             while self.running:
                 try:
                     if self.current_position:
-                        sec_id = self.current_position.get('security_id', '')
-                        if str(sec_id).startswith('SIM_'):
-                            self._simulate_option_ltp(
-                                self.current_position.get('index_name', config['selected_index'])
-                            )
-                        elif self.dhan:
+                        if self.dhan:
                             await self._update_option_ltp_if_needed()
 
                         # Always check SL/target after LTP update
                         ltp = bot_state.get('current_option_ltp', 0.0)
                         if ltp > 0:
+                            # Update trailing SL level first, then check if breached
+                            await self.check_trailing_sl(ltp)
                             await self.check_tick_sl(ltp)
 
                     await self.broadcast_state()
@@ -1056,6 +969,8 @@ class TradingBot:
                 await asyncio.sleep(1.0)
 
         heartbeat_task = asyncio.create_task(_state_heartbeat(), name="state_heartbeat")
+
+        while self.running:
             try:
                 index_name = config['selected_index']
                 candle_interval = int(config.get('candle_interval', 5) or 5)
@@ -1150,10 +1065,7 @@ class TradingBot:
                             current_candle_time=datetime.now(),
                         )
 
-                    # Simulate option LTP for paper replay positions
-                    if self.current_position:
-                        self._simulate_option_ltp(index_name)
-
+                    # Replay uses historical DB candles — no live LTP needed
                     await self.broadcast_state()
                     speed = float(config.get('paper_replay_speed', 10.0) or 10.0)
                     speed = max(0.1, min(100.0, speed))
@@ -1238,11 +1150,11 @@ class TradingBot:
             bot_state['htf_supertrend_signal'] = htf_signal
 
     async def _update_option_ltp_if_needed(self) -> None:
-        """Fetch live option LTP from Dhan when a real position is open."""
+        """Fetch live option LTP from Dhan when a position is open."""
         if not self.current_position or not self.dhan:
             return
         security_id = self.current_position.get('security_id', '')
-        if not security_id or security_id.startswith('SIM_'):
+        if not security_id:
             return
         try:
             index_name = config['selected_index']
@@ -1259,28 +1171,6 @@ class TradingBot:
                     pass
         except Exception:
             pass
-
-    def _simulate_option_ltp(self, index_name: str) -> None:
-        """Compute synthetic option LTP for paper/SIM positions."""
-        if not self.current_position:
-            return
-        security_id = self.current_position.get('security_id', '')
-        if not security_id.startswith('SIM_'):
-            return
-        strike = self.current_position.get('strike', 0)
-        option_type = self.current_position.get('option_type', '')
-        index_ltp = bot_state['index_ltp']
-        if not (strike and index_ltp):
-            return
-        distance_from_atm = abs(index_ltp - strike)
-        if option_type == 'CE':
-            intrinsic = max(0.0, index_ltp - strike)
-        else:
-            intrinsic = max(0.0, strike - index_ltp)
-        time_value = 150 * max(0.0, 1 - distance_from_atm / 500)
-        simulated_ltp = intrinsic + time_value + random.choice([-0.10, -0.05, 0, 0.05, 0.10])
-        simulated_ltp = max(0.05, round(round(simulated_ltp / 0.05) * 0.05, 2))
-        bot_state['current_option_ltp'] = simulated_ltp
 
     async def broadcast_state(self):
         """Broadcast current state to WebSocket clients"""
@@ -1869,49 +1759,36 @@ class TradingBot:
         entry_price = 0.0
         security_id = None
 
-        # PAPER MODE
+        # PAPER MODE — always uses real Dhan option prices, no synthetic fallback
         if bot_state['mode'] == 'paper':
-            used_live_quote = False
+            if not self.dhan:
+                logger.error("[ENTRY] Paper mode requires Dhan credentials — no entry placed")
+                return
+            if not expiry:
+                logger.error("[ENTRY] Could not determine expiry — no entry placed")
+                return
 
-            try:
-                if self._paper_should_use_live_option_quotes() and self.dhan:
-                    security_id = await self.dhan.get_atm_option_security_id(
-                        index_name, strike, option_type, expiry
-                    )
+            security_id = await self.dhan.get_atm_option_security_id(
+                index_name, strike, option_type, expiry
+            )
+            if not security_id:
+                logger.warning(f"[ENTRY] PAPER blocked — could not find security_id for {index_name} {strike} {option_type} {expiry}")
+                return
 
-                    if security_id:
-                        option_ltp = await self.dhan.get_option_ltp(
-                            security_id=security_id,
-                            strike=strike,
-                            option_type=option_type,
-                            expiry=expiry,
-                            index_name=index_name
-                        )
+            option_ltp = await self.dhan.get_option_ltp(
+                security_id=security_id,
+                strike=strike,
+                option_type=option_type,
+                expiry=expiry,
+                index_name=index_name
+            )
+            if not option_ltp or float(option_ltp) <= 0:
+                logger.warning(f"[ENTRY] PAPER blocked — could not get live LTP for SecID={security_id}")
+                return
 
-                        if option_ltp and float(option_ltp) > 0:
-                            entry_price = round(float(option_ltp) / 0.05) * 0.05
-                            entry_price = round(entry_price, 2)
-                            used_live_quote = True
-                            logger.debug(f"[ENTRY] PAPER live-quote fetched: SecID={security_id} LTP={entry_price} Strike={strike} OptType={option_type} Index={index_name}")
-
-            except Exception as e:
-                logger.debug(f"[ENTRY] PAPER live-quote failed: {e}")
-
-            # Fallback to synthetic pricing
-            if not used_live_quote:
-                security_id = f"SIM_{index_name}_{strike}_{option_type}"
-
-                distance = abs(index_ltp - strike)
-                intrinsic = max(0, index_ltp - strike) if option_type == 'CE' else max(0, strike - index_ltp)
-                time_value = 150 * max(0, 1 - (distance / 500))
-
-                entry_price = intrinsic + time_value
-                entry_price = round(entry_price / 0.05) * 0.05
-                entry_price = round(entry_price, 2)
-
-            label = "PAPER(LIVE-QUOTE)" if used_live_quote else "PAPER(SYNTHETIC)"
+            entry_price = round(round(float(option_ltp) / 0.05) * 0.05, 2)
             logger.info(
-                f"[ENTRY] {label} | {index_name} {option_type} {strike} | "
+                f"[ENTRY] PAPER | {index_name} {option_type} {strike} | "
                 f"Expiry: {expiry} | Price: {entry_price} | Qty: {qty} | SecID: {security_id}"
             )
         
