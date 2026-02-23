@@ -338,6 +338,7 @@ async def load_config():
                             'prune_db_on_startup',
                             'vacuum_db_on_prune',
                             'enable_internal_market_data_service',
+                            'enable_risk_based_lots',
                         }
 
                         if key in int_keys:
