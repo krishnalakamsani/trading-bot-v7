@@ -917,6 +917,8 @@ class TradingBot:
         elif bot_state['mode'] == 'paper':
             logger.info(f"[ORDER] Paper mode - EXIT order not placed to Dhan (simulated) | Trade: {trade_id}")
             logger.info(f"[EXIT] ✓ Position closed | {index_name} {option_type} {strike} | Reason: {reason} | PnL: {pnl} | Order Placed: False")
+            # Advance state machine through EXITING for paper (no real order to wait for)
+            state_machine.placing_exit()
             # Update DB in background - don't wait
             asyncio.create_task(update_trade_exit(
                 trade_id=trade_id,
@@ -1030,7 +1032,28 @@ class TradingBot:
         candle_interval = int(config.get('candle_interval', 5) or 5)
         tick_engine.subscribe(index_name=index_name, candle_interval=candle_interval)
 
-        while self.running:
+        # ── Single dedicated state broadcaster (1s interval) ──────────────────
+        # Replaces all scattered broadcast_state() calls in the loop.
+        # Guarantees frontend always gets a fresh, complete snapshot every second,
+        # regardless of whether a candle fired or not.
+        async def _state_heartbeat():
+            while self.running:
+                try:
+                    # Update option LTP before broadcasting
+                    if self.current_position:
+                        sec_id = self.current_position.get('security_id', '')
+                        if str(sec_id).startswith('SIM_'):
+                            self._simulate_option_ltp(
+                                self.current_position.get('index_name', config['selected_index'])
+                            )
+                        elif self.dhan:
+                            await self._update_option_ltp_if_needed()
+                    await self.broadcast_state()
+                except Exception:
+                    pass
+                await asyncio.sleep(1.0)
+
+        heartbeat_task = asyncio.create_task(_state_heartbeat(), name="state_heartbeat")
             try:
                 index_name = config['selected_index']
                 candle_interval = int(config.get('candle_interval', 5) or 5)
@@ -1136,20 +1159,15 @@ class TradingBot:
                     continue
 
                 # --- Live / paper mode: wait for next closed candle from TickEngine ---
-                # Use a short-polling wait so we can still broadcast state every second
-                # even if a candle hasn't closed yet (keeps UI LTP live)
                 try:
                     await asyncio.wait_for(tick_engine.candle_event.wait(), timeout=1.0)
                 except asyncio.TimeoutError:
-                    # No new candle yet — update option LTP and broadcast, then loop
-                    await self._update_option_ltp_if_needed()
-                    await self.broadcast_state()
+                    # No new candle yet — heartbeat task handles LTP update + broadcast
                     continue
 
                 # A new candle just closed
                 candle = tick_engine.last_closed_candle
                 if candle is None:
-                    await self.broadcast_state()
                     continue
 
                 high = candle.high
@@ -1157,7 +1175,6 @@ class TradingBot:
                 close = candle.close
 
                 if not (high > 0 and low < float('inf') and close > 0):
-                    await self.broadcast_state()
                     continue
 
                 self._set_index_ltp(close)
@@ -1188,24 +1205,22 @@ class TradingBot:
                     current_candle_time=datetime.now(),
                 )
 
-                # Tick-level SL check after each candle
+                # Tick-level SL check after each candle close
                 if self.current_position and bot_state['current_option_ltp'] > 0:
-                    tick_exit = await self.check_tick_sl(bot_state['current_option_ltp'])
-                    if tick_exit:
-                        await self.broadcast_state()
-                        continue
-
-                # Paper mode: simulate option LTP
-                if self.current_position and bot_state.get('mode') == 'paper':
-                    self._simulate_option_ltp(index_name)
-
-                await self.broadcast_state()
+                    await self.check_tick_sl(bot_state['current_option_ltp'])
 
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.error(f"[ERROR] Trading loop exception: {e}")
                 await asyncio.sleep(5)
+
+        # Clean up heartbeat task
+        heartbeat_task.cancel()
+        try:
+            await heartbeat_task
+        except asyncio.CancelledError:
+            pass
 
     def _update_htf_state(self, htf_value, htf_signal) -> None:
         """Write HTF SuperTrend values into bot_state."""
@@ -1999,6 +2014,12 @@ class TradingBot:
         self._exit_score_flip_count = 0
         self._exit_score_direction = option_type  # 'CE' or 'PE'
 
+        # Paper mode skips the real order/fill cycle so placing_entry() was never
+        # called — advance through ENTERING manually so can_exit becomes True.
+        # Live mode already called placing_entry() inside its order block above.
+        if bot_state['mode'] == 'paper':
+            state_machine.placing_entry()
+
         state_machine.entry_confirmed()
 
         bot_state['current_position'] = self.current_position
@@ -2026,15 +2047,6 @@ class TradingBot:
                     while self.current_position is not None:
                         try:
                             ltp = bot_state.get('current_option_ltp') or 0.0
-                            # For SIM positions, simulate option LTP every tick
-                            # (run_loop only simulates on candle close — every 5s)
-                            if self.current_position:
-                                sec_id = self.current_position.get('security_id', '')
-                                if str(sec_id).startswith('SIM_'):
-                                    self._simulate_option_ltp(
-                                        self.current_position.get('index_name', config['selected_index'])
-                                    )
-                                    ltp = bot_state.get('current_option_ltp') or ltp
                             if float(ltp) > 0:
                                 # Step 1: update trailing SL level
                                 await self.check_trailing_sl(float(ltp))
