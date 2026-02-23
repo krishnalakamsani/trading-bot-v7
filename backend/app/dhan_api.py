@@ -300,6 +300,16 @@ class DhanAPI:
                 self._option_chain_cache[cache_key] = response
                 self._option_chain_cache_time[cache_key] = now
                 logger.info(f"Option chain cached at {now.strftime('%H:%M:%S')}")
+                # DEBUG: log structure to diagnose strike matching failures
+                oc = self._extract_option_chain_oc(response)
+                if isinstance(oc, dict):
+                    sample_keys = list(oc.keys())[:5]
+                    logger.info(f"[DEBUG] Option chain oc keys (first 5): {sample_keys}")
+                elif isinstance(oc, list):
+                    sample = [(e.get('strike_price') or e.get('strikePrice') or e.get('strike')) for e in oc[:5]]
+                    logger.info(f"[DEBUG] Option chain oc list strikes (first 5): {sample}")
+                else:
+                    logger.info(f"[DEBUG] Option chain oc type: {type(oc)} | raw data keys: {list(response.get('data', {}).keys()) if isinstance(response.get('data'), dict) else 'not a dict'}")
             
             return response if response else {}
         except Exception as e:
