@@ -40,6 +40,8 @@ const NiftyTracker = () => {
   const mdsScore = Number(botStatus?.mds_score ?? 0);
   const mdsConfidence = Number(botStatus?.mds_confidence ?? 0);
   const mdsIsChoppy = Boolean(botStatus?.mds_is_choppy);
+  const mdsHtfScore = Number(botStatus?.mds_htf_score ?? 0);
+  const mdsHtfTimeframe = Number(botStatus?.mds_htf_timeframe ?? 0);
 
   const formatTf = (s) => {
     if (s < 60) return `${s}s`;
@@ -107,6 +109,23 @@ const NiftyTracker = () => {
               </p>
               <p className="font-mono mt-1.5" style={{ fontSize: "0.65rem", color: "var(--text-secondary)" }} data-testid="mds-meta">
                 {mdsIsChoppy ? "⚡ CHOP" : `Conf ${Number.isFinite(mdsConfidence) ? (mdsConfidence * 100).toFixed(0) : "—"}%`}
+              </p>
+            </div>
+          )}
+
+          {/* HTF Score */}
+          {showMds && (
+            <div className="inset-box flex flex-col justify-center" style={{ minWidth: 110 }}>
+              <p className="label-text mb-1">
+                HTF Score{mdsHtfTimeframe > 0 ? ` (${mdsHtfTimeframe < 60 ? `${mdsHtfTimeframe}s` : `${mdsHtfTimeframe / 60}m`})` : ""}
+              </p>
+              <p className="font-mono font-bold text-xl leading-none" style={{
+                color: mdsHtfScore > 6 ? "var(--profit)" : mdsHtfScore < -6 ? "var(--loss)" : "var(--text-secondary)"
+              }}>
+                {Number.isFinite(mdsHtfScore) ? mdsHtfScore.toFixed(1) : "—"}
+              </p>
+              <p className="font-mono mt-1.5" style={{ fontSize: "0.65rem", color: "var(--text-dim)" }}>
+                {mdsHtfScore > 1 ? "▲ bullish" : mdsHtfScore < -1 ? "▼ bearish" : "◆ neutral"}
               </p>
             </div>
           )}

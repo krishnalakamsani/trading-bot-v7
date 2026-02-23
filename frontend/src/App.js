@@ -45,6 +45,8 @@ function App() {
     mds_score: 0,
     mds_direction: "NONE",
     mds_confidence: 0,
+    mds_htf_score: 0,
+    mds_htf_timeframe: 0,
     selected_index: "NIFTY",
   });
 
@@ -205,6 +207,8 @@ function App() {
             mds_confidence: u.mds_confidence ?? prev.mds_confidence,
             mds_is_choppy: u.mds_is_choppy ?? prev.mds_is_choppy,
             mds_direction: u.mds_direction ?? prev.mds_direction,
+            mds_htf_score: u.mds_htf_score ?? prev.mds_htf_score,
+            mds_htf_timeframe: u.mds_htf_timeframe ?? prev.mds_htf_timeframe,
           }));
 
           setSummary(prev => ({

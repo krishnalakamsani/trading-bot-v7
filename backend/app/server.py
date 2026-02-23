@@ -163,14 +163,21 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"[STARTUP] DB prune skipped: {e}")
 
-    # Start TickEngine — polls MDS every ~1s, builds candles, broadcasts tick+candle
-    # over WebSocket. Trading loop waits on candle_event from this engine.
+    # Start TickEngine — polls MDS every ~1s, builds candles, broadcasts state_update
     try:
         from tick_engine import tick_engine
         await tick_engine.start()
         logger.info("[STARTUP] TickEngine started")
     except Exception as e:
         logger.warning(f"[STARTUP] TickEngine not started: {e}")
+
+    # Start OptionPriceEngine — polls Dhan for option LTP when position is open
+    try:
+        from option_price_engine import option_price_engine
+        await option_price_engine.start()
+        logger.info("[STARTUP] OptionPriceEngine started")
+    except Exception as e:
+        logger.warning(f"[STARTUP] OptionPriceEngine not started: {e}")
 
     # Optional: auto-start the trading bot on server boot
     if bool(config.get('auto_start_bot', False)):
@@ -187,6 +194,11 @@ async def lifespan(app: FastAPI):
         try:
             from tick_engine import tick_engine
             await tick_engine.stop()
+        except Exception:
+            pass
+        try:
+            from option_price_engine import option_price_engine
+            await option_price_engine.stop()
         except Exception:
             pass
         logger.info("[SHUTDOWN] Server shut down")

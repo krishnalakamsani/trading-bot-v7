@@ -295,6 +295,20 @@ class TradingBot:
                 bot_state['mds_confidence'] = float(mds_snapshot.confidence)
                 bot_state['mds_is_choppy'] = bool(mds_snapshot.is_choppy)
                 bot_state['mds_direction'] = str(mds_snapshot.direction)
+
+                # Extract HTF (highest timeframe) score from tf_scores
+                try:
+                    tf_scores = getattr(mds_snapshot, 'tf_scores', {}) or {}
+                    if isinstance(tf_scores, dict) and len(tf_scores) >= 2:
+                        next_tf = max(int(k) for k in tf_scores.keys())
+                        next_tf_score = tf_scores.get(next_tf)
+                        htf_score = float(getattr(next_tf_score, 'weighted_score', 0.0) or 0.0)
+                        bot_state['mds_htf_score'] = htf_score
+                        bot_state['mds_htf_timeframe'] = next_tf
+                    else:
+                        bot_state['mds_htf_score'] = 0.0
+                except Exception:
+                    bot_state['mds_htf_score'] = 0.0
             except Exception as e:
                 logger.error(f"[MDS] ScoreEngine update failed: {e}", exc_info=True)
                 mds_snapshot = None
@@ -344,13 +358,6 @@ class TradingBot:
                 interval_seconds=int(config.get('candle_interval', candle_interval) or candle_interval),
             )
 
-        # Candle-close trailing SL/target check regardless of signal readiness
-        if self.current_position:
-            option_ltp = bot_state['current_option_ltp']
-            sl_hit = await self.check_trailing_sl_on_close(option_ltp)
-            if sl_hit:
-                self.last_exit_candle_time = current_candle_time
-
         runtime = self._get_strategy_runtime()
         await runtime.on_closed_candle(
             self,
@@ -389,6 +396,12 @@ class TradingBot:
         if config['dhan_access_token'] and config['dhan_client_id']:
             try:
                 self.dhan = DhanAPI(config['dhan_access_token'], config['dhan_client_id'])
+                # Give OptionPriceEngine the Dhan handle so it can fetch option LTP
+                try:
+                    from option_price_engine import option_price_engine
+                    option_price_engine.set_dhan(self.dhan)
+                except Exception:
+                    pass
                 logger.info("[MARKET] Dhan API initialized")
                 return True
             except Exception as e:
@@ -948,27 +961,20 @@ class TradingBot:
         candle_interval = int(config.get('candle_interval', 5) or 5)
         tick_engine.subscribe(index_name=index_name, candle_interval=candle_interval)
 
-        # ── Single dedicated state broadcaster (1s interval) ──────────────────
+        # ── SL/Target checker (1s) ────────────────────────────────────────────
         async def _state_heartbeat():
             while self.running:
                 try:
                     if self.current_position:
-                        if self.dhan:
-                            await self._update_option_ltp_if_needed()
-
-                        # Always check SL/target after LTP update
-                        ltp = bot_state.get('current_option_ltp', 0.0)
+                        ltp = float(bot_state.get('current_option_ltp') or 0.0)
                         if ltp > 0:
-                            # Update trailing SL level first, then check if breached
                             await self.check_trailing_sl(ltp)
                             await self.check_tick_sl(ltp)
-
-                    await self.broadcast_state()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.error(f"[SL] Checker error: {e}", exc_info=True)
                 await asyncio.sleep(1.0)
 
-        heartbeat_task = asyncio.create_task(_state_heartbeat(), name="state_heartbeat")
+        heartbeat_task = asyncio.create_task(_state_heartbeat(), name="sl_checker")
 
         while self.running:
             try:
@@ -1065,8 +1071,7 @@ class TradingBot:
                             current_candle_time=datetime.now(),
                         )
 
-                    # Replay uses historical DB candles — no live LTP needed
-                    await self.broadcast_state()
+                    # Replay uses historical DB candles — TickEngine handles broadcasting
                     speed = float(config.get('paper_replay_speed', 10.0) or 10.0)
                     speed = max(0.1, min(100.0, speed))
                     await asyncio.sleep(max(0.05, float(candle_interval) / speed))
@@ -1148,73 +1153,6 @@ class TradingBot:
             bot_state['htf_signal_status'] = 'waiting'
         if htf_signal:
             bot_state['htf_supertrend_signal'] = htf_signal
-
-    async def _update_option_ltp_if_needed(self) -> None:
-        """Fetch live option LTP from Dhan when a position is open."""
-        if not self.current_position or not self.dhan:
-            return
-        security_id = self.current_position.get('security_id', '')
-        if not security_id:
-            return
-        try:
-            index_name = config['selected_index']
-            opt_id = int(security_id)
-            _idx_ltp, option_ltp = await asyncio.to_thread(
-                self.dhan.get_index_and_option_ltp, index_name, opt_id
-            )
-            if option_ltp and option_ltp > 0:
-                option_ltp = round(round(option_ltp / 0.05) * 0.05, 2)
-                bot_state['current_option_ltp'] = option_ltp
-                try:
-                    await self.check_trailing_sl(option_ltp)
-                except Exception:
-                    pass
-        except Exception:
-            pass
-
-    async def broadcast_state(self):
-        """Broadcast current state to WebSocket clients"""
-        from server import manager
-
-        payload = {
-            "type": "state_update",
-            "data": {
-                "index_ltp": bot_state['index_ltp'],
-                "supertrend_signal": bot_state['last_supertrend_signal'],
-                "supertrend_value": bot_state['supertrend_value'],
-                "htf_supertrend_signal": bot_state.get('htf_supertrend_signal'),
-                "htf_supertrend_value": bot_state.get('htf_supertrend_value', 0.0),
-                "position": bot_state['current_position'],
-                "entry_price": bot_state['entry_price'],
-                "current_option_ltp": bot_state['current_option_ltp'],
-                "trailing_sl": bot_state['trailing_sl'],
-                "daily_pnl": bot_state['daily_pnl'],
-                "daily_trades": bot_state['daily_trades'],
-                "is_running": bot_state['is_running'],
-                "bot_phase": state_machine.phase_name,
-                "mode": bot_state['mode'],
-                "mds_score": bot_state.get('mds_score', 0.0),
-                "mds_slope": bot_state.get('mds_slope', 0.0),
-                "mds_acceleration": bot_state.get('mds_acceleration', 0.0),
-                "mds_stability": bot_state.get('mds_stability', 0.0),
-                "mds_confidence": bot_state.get('mds_confidence', 0.0),
-                "mds_is_choppy": bot_state.get('mds_is_choppy', False),
-                "mds_direction": bot_state.get('mds_direction', 'NONE'),
-                "trading_enabled": bool(config.get('trading_enabled', True)),
-                "selected_index": config['selected_index'],
-                "candle_interval": config['candle_interval'],
-                "htf_filter_enabled": bool(config.get('htf_filter_enabled', True)),
-                "htf_filter_timeframe": int(config.get('htf_filter_timeframe', 60)),
-                "timestamp": datetime.now(timezone.utc).isoformat()
-            }
-        }
-
-        try:
-            logger.debug(f"[STATE] Broadcasting state_update: index_ltp={payload['data'].get('index_ltp')} selected_index={payload['data'].get('selected_index')} mds_score={payload['data'].get('mds_score')}")
-            await manager.broadcast(payload)
-            logger.debug("[STATE] state_update broadcast complete")
-        except Exception as e:
-            logger.exception(f"[STATE] Failed to broadcast state_update: {e}")
 
     async def process_mds_on_close(self, mds_snapshot, index_ltp: float) -> bool:
         """Process score-engine snapshot on candle close.
@@ -1395,192 +1333,126 @@ class TradingBot:
         return False
     
     async def check_trailing_sl(self, current_ltp: float):
-        """Update SL values - initial fixed SL then trails profit using step-based method"""
+        """Update trailing SL level based on current profit."""
         if not self.current_position:
             return
 
-        # Coerce config values to numbers and validate
         try:
-            trail_start = float(config.get('trail_start_profit', 0) or 0)
-        except Exception:
-            trail_start = 0.0
-        try:
-            trail_step = float(config.get('trail_step', 0) or 0)
-        except Exception:
-            trail_step = 0.0
+            trail_start = float(config.get('trail_start_profit') or 0)
+            trail_step  = float(config.get('trail_step') or 0)
+            initial_sl  = float(config.get('initial_stoploss') or 0)
+            current_ltp = float(current_ltp)
+            entry_price = float(self.entry_price)
+        except (TypeError, ValueError):
+            return
 
         if trail_start <= 0 or trail_step <= 0:
-            # Trailing disabled - don't set any SL
             return
 
-        try:
-            profit_points = float(current_ltp) - float(self.entry_price)
-        except Exception:
-            return
-
-        # Track highest profit reached (use max to avoid regressions)
+        profit_points = current_ltp - entry_price
         self.highest_profit = max(self.highest_profit, profit_points)
 
-        # Diagnostic log to help debug trailing behavior (DEBUG level to avoid log flood)
-        logger.debug(
-            f"[SL] check called | LTP={current_ltp:.2f} Entry={self.entry_price:.2f} "
-            f"Profit={profit_points:.2f} Highest={self.highest_profit:.2f} "
-            f"TrailStart={trail_start} Step={trail_step} CurrentTSL={self.trailing_sl}"
-        )
-
-        # Step 1: Set initial fixed stoploss (if enabled)
-        try:
-            initial_sl = float(config.get('initial_stoploss', 0) or 0)
-        except Exception:
-            initial_sl = 0.0
-
+        # Set initial fixed SL on first call
         if initial_sl > 0 and self.trailing_sl is None:
-            self.trailing_sl = float(self.entry_price) - initial_sl
+            self.trailing_sl = entry_price - initial_sl
             bot_state['trailing_sl'] = self.trailing_sl
             logger.info(f"[SL] Initial SL set: {self.trailing_sl:.2f} ({initial_sl} pts below entry)")
-            logger.debug(f"[SL] Continuing after initial SL; current_ltp={current_ltp:.2f} entry={self.entry_price:.2f} profit_points={profit_points:.2f}")
 
-        # Step 2: Activate trailing once highest profit exceeds trail_start
+        # Trailing activates once profit crosses trail_start
         if self.highest_profit < trail_start:
             return
 
-        # Compute how many full steps we've moved past trail_start
-        trail_levels = int(math.floor((self.highest_profit - trail_start) / trail_step))
-        locked_profit = (trail_start - trail_step) + (trail_levels * trail_step)
-        locked_profit = max(0.0, locked_profit)
-        new_sl = float(self.entry_price) + locked_profit
+        trail_levels  = int(math.floor((self.highest_profit - trail_start) / trail_step))
+        locked_profit = max(0.0, (trail_start - trail_step) + (trail_levels * trail_step))
+        new_sl        = entry_price + locked_profit
 
-        # Always move SL up, never down (protect profit)
+        # Only ever move SL up
         if self.trailing_sl is None or new_sl > float(self.trailing_sl):
             old_sl = self.trailing_sl
             self.trailing_sl = new_sl
             bot_state['trailing_sl'] = self.trailing_sl
-
-            logger.debug(f"[SL] Computed new_sl={new_sl:.2f} locked_profit={locked_profit:.2f} highest_profit={self.highest_profit:.2f} trail_start={trail_start} trail_step={trail_step}")
-            if old_sl is not None and old_sl > (float(self.entry_price) - initial_sl):
+            if old_sl is not None and old_sl > (entry_price - initial_sl):
                 logger.info(f"[SL] Trailing SL updated: {old_sl:.2f} → {new_sl:.2f} (Profit: {profit_points:.2f} pts)")
             else:
                 logger.info(f"[SL] Trailing started: {new_sl:.2f} (Profit: {profit_points:.2f} pts)")
 
     
-    async def check_trailing_sl_on_close(self, current_ltp: float) -> bool:
-        """Check if trailing SL or target is hit on candle close"""
-        if not self.current_position:
-            return False
-        
-        index_config = get_index_config(config['selected_index'])
-        qty = int(self.current_position.get('qty') or 0)
-        if qty <= 0:
-            qty = config['order_qty'] * index_config['lot_size']
-        profit_points = current_ltp - self.entry_price
-        
-        # Only fixed SL and target exits
-        target_points = config.get('target_points', 0)
-        sl_points = config.get('initial_stoploss', 0)
-        # Target exit
-        if target_points > 0 and profit_points >= target_points:
-            pnl = profit_points * qty
-            logger.info(
-                f"[EXIT] Target hit | LTP={current_ltp:.2f} | Entry={self.entry_price:.2f} | Profit={profit_points:.2f} pts | Target={target_points:.2f} pts"
-            )
-            closed = await self.close_position(current_ltp, pnl, "Target Hit")
-            return bool(closed)
-        # Fixed SL exit
-        if sl_points > 0 and profit_points <= -sl_points:
-            pnl = profit_points * qty
-            logger.info(
-                f"[EXIT] Stop-loss hit | LTP={current_ltp:.2f} | Entry={self.entry_price:.2f} | Loss={profit_points:.2f} pts | SL={sl_points:.2f} pts"
-            )
-            closed = await self.close_position(current_ltp, pnl, "Stop-loss Hit")
-            return bool(closed)
-        # Trailing SL exit (absolute price stored in self.trailing_sl)
-        try:
-            tsl = getattr(self, 'trailing_sl', None)
-        except Exception:
-            tsl = None
-        if tsl is not None:
-            # Exit when price falls to or below trailing SL
-            if current_ltp <= tsl:
-                pnl = profit_points * qty
-                logger.info(
-                    f"[EXIT] Trailing stop hit (close) | LTP={current_ltp:.2f} | Entry={self.entry_price:.2f} | SL={tsl:.2f}"
-                )
-                closed = await self.close_position(current_ltp, pnl, "Trailing SL Hit")
-                return bool(closed)
-        # Max trade duration (candle-close enforcement)
-        try:
-            max_dur = int(config.get('max_trade_duration_seconds', 0) or 0)
-        except Exception:
-            max_dur = 0
-        if max_dur > 0 and self.entry_time_utc:
-            now = datetime.now(timezone.utc)
-            elapsed = (now - self.entry_time_utc).total_seconds()
-            if elapsed >= max_dur:
-                pnl = profit_points * qty
-                logger.info(
-                    f"[EXIT] Max duration hit (close) | Elapsed={elapsed:.1f}s | LTP={current_ltp:.2f} | Entry={self.entry_price:.2f} | MaxDur={max_dur}s"
-                )
-                closed = await self.close_position(current_ltp, pnl, "Max Duration Hit")
-                return bool(closed)
-        return False
-    
     async def check_tick_sl(self, current_ltp: float) -> bool:
-        """Check SL/Target on every tick (more responsive than candle close)"""
+        """Check SL/Target/Trailing/Duration on every tick."""
         if not self.current_position:
             return False
         if not state_machine.can_exit:
+            logger.warning(f"[SL] check_tick_sl blocked — state={state_machine.phase_name}, expected IN_POSITION")
             return False
-        
+
+        try:
+            current_ltp = float(current_ltp)
+            entry_price = float(self.entry_price)
+        except (TypeError, ValueError):
+            return False
+
         index_config = get_index_config(config['selected_index'])
         qty = int(self.current_position.get('qty') or 0)
         if qty <= 0:
-            qty = config['order_qty'] * index_config['lot_size']
-        profit_points = current_ltp - self.entry_price
+            qty = int(config.get('order_qty', 1)) * index_config['lot_size']
+
+        profit_points = current_ltp - entry_price
         pnl = profit_points * qty
-        
-        # Only fixed SL and target exits
-        target_points = config.get('target_points', 0)
-        sl_points = config.get('initial_stoploss', 0)
-        # Target exit
+
+        # ── Target ────────────────────────────────────────────────────────────
+        try:
+            target_points = float(config.get('target_points') or 0)
+        except (TypeError, ValueError):
+            target_points = 0.0
+
         if target_points > 0 and profit_points >= target_points:
             logger.info(
-                f"[EXIT] Target hit (tick) | LTP={current_ltp:.2f} | Entry={self.entry_price:.2f} | Profit={profit_points:.2f} pts | Target={target_points:.2f} pts"
+                f"[EXIT] Target hit | LTP={current_ltp:.2f} Entry={entry_price:.2f} "
+                f"Profit={profit_points:.2f} Target={target_points:.2f}"
             )
-            closed = await self.close_position(current_ltp, pnl, "Target Hit")
-            return bool(closed)
-        # Fixed SL exit
+            return bool(await self.close_position(current_ltp, pnl, "Target Hit"))
+
+        # ── Fixed SL ──────────────────────────────────────────────────────────
+        try:
+            sl_points = float(config.get('initial_stoploss') or 0)
+        except (TypeError, ValueError):
+            sl_points = 0.0
+
         if sl_points > 0 and profit_points <= -sl_points:
             logger.info(
-                f"[EXIT] Stop-loss hit (tick) | LTP={current_ltp:.2f} | Entry={self.entry_price:.2f} | Loss={profit_points:.2f} pts | SL={sl_points:.2f} pts"
+                f"[EXIT] Stop-loss hit | LTP={current_ltp:.2f} Entry={entry_price:.2f} "
+                f"Loss={profit_points:.2f} SL={sl_points:.2f}"
             )
-            closed = await self.close_position(current_ltp, pnl, "Stop-loss Hit")
-            return bool(closed)
-        # Trailing SL exit (tick-level)
-        try:
-            tsl = getattr(self, 'trailing_sl', None)
-        except Exception:
-            tsl = None
+            return bool(await self.close_position(current_ltp, pnl, "Stop-loss Hit"))
+
+        # ── Trailing SL ───────────────────────────────────────────────────────
+        tsl = getattr(self, 'trailing_sl', None)
         if tsl is not None:
-            if current_ltp <= tsl:
-                logger.info(
-                    f"[EXIT] Trailing stop hit (tick) | LTP={current_ltp:.2f} | Entry={self.entry_price:.2f} | SL={tsl:.2f}"
-                )
-                closed = await self.close_position(current_ltp, pnl, "Trailing SL Hit")
-                return bool(closed)
-        # Max trade duration (tick-level enforcement)
+            try:
+                tsl = float(tsl)
+                if current_ltp <= tsl:
+                    logger.info(
+                        f"[EXIT] Trailing SL hit | LTP={current_ltp:.2f} TSL={tsl:.2f} Entry={entry_price:.2f}"
+                    )
+                    return bool(await self.close_position(current_ltp, pnl, "Trailing SL Hit"))
+            except (TypeError, ValueError):
+                pass
+
+        # ── Max Duration ──────────────────────────────────────────────────────
         try:
-            max_dur = int(config.get('max_trade_duration_seconds', 0) or 0)
-        except Exception:
+            max_dur = int(config.get('max_trade_duration_seconds') or 0)
+        except (TypeError, ValueError):
             max_dur = 0
+
         if max_dur > 0 and self.entry_time_utc:
-            now = datetime.now(timezone.utc)
-            elapsed = (now - self.entry_time_utc).total_seconds()
+            elapsed = (datetime.now(timezone.utc) - self.entry_time_utc).total_seconds()
             if elapsed >= max_dur:
                 logger.info(
-                    f"[EXIT] Max duration hit (tick) | Elapsed={elapsed:.1f}s | LTP={current_ltp:.2f} | Entry={self.entry_price:.2f} | MaxDur={max_dur}s"
+                    f"[EXIT] Max duration hit | Elapsed={elapsed:.0f}s MaxDur={max_dur}s "
+                    f"LTP={current_ltp:.2f} Entry={entry_price:.2f}"
                 )
-                closed = await self.close_position(current_ltp, pnl, "Max Duration Hit")
-                return bool(closed)
+                return bool(await self.close_position(current_ltp, pnl, "Max Duration Hit"))
+
         return False
     
     async def process_signal_on_close(self, signal: str, index_ltp: float, flipped: bool = False) -> bool:

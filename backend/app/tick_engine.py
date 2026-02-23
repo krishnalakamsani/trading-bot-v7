@@ -119,6 +119,9 @@ class TickEngine:
                         self.candle_event.set()
                         self.candle_event.clear()
 
+                    # Always broadcast full state_update every tick (single source of truth)
+                    await self._broadcast_state()
+
                 await asyncio.sleep(max(0.5, poll_s))
 
             except asyncio.CancelledError:
@@ -142,6 +145,52 @@ class TickEngine:
             return None
 
     # ── broadcast helpers ─────────────────────────────────────────────────────
+
+    async def _broadcast_state(self) -> None:
+        """Broadcast complete bot state snapshot. Called every tick — single source of truth."""
+        try:
+            from server import manager
+            from config import bot_state, config
+            from bot_state_machine import state_machine
+            from datetime import datetime, timezone
+
+            asyncio.create_task(manager.broadcast({
+                "type": "state_update",
+                "data": {
+                    "index_ltp":              bot_state.get("index_ltp", 0.0),
+                    "current_option_ltp":     bot_state.get("current_option_ltp", 0.0),
+                    "position":               bot_state.get("current_position"),
+                    "entry_price":            bot_state.get("entry_price", 0.0),
+                    "trailing_sl":            bot_state.get("trailing_sl"),
+                    "daily_pnl":              bot_state.get("daily_pnl", 0.0),
+                    "daily_trades":           bot_state.get("daily_trades", 0),
+                    "is_running":             bot_state.get("is_running", False),
+                    "bot_phase":              state_machine.phase_name,
+                    "mode":                   bot_state.get("mode", "paper"),
+                    "market_status":          bot_state.get("market_status", ""),
+                    "mds_score":              bot_state.get("mds_score", 0.0),
+                    "mds_slope":              bot_state.get("mds_slope", 0.0),
+                    "mds_acceleration":       bot_state.get("mds_acceleration", 0.0),
+                    "mds_stability":          bot_state.get("mds_stability", 0.0),
+                    "mds_confidence":         bot_state.get("mds_confidence", 0.0),
+                    "mds_is_choppy":          bot_state.get("mds_is_choppy", False),
+                    "mds_direction":          bot_state.get("mds_direction", "NONE"),
+                    "mds_htf_score":          bot_state.get("mds_htf_score", 0.0),
+                    "mds_htf_timeframe":      bot_state.get("mds_htf_timeframe", 0),
+                    "supertrend_signal":      bot_state.get("last_supertrend_signal"),
+                    "supertrend_value":       bot_state.get("supertrend_value"),
+                    "htf_supertrend_signal":  bot_state.get("htf_supertrend_signal"),
+                    "htf_supertrend_value":   bot_state.get("htf_supertrend_value", 0.0),
+                    "trading_enabled":        bool(config.get("trading_enabled", True)),
+                    "selected_index":         config.get("selected_index", "NIFTY"),
+                    "candle_interval":        config.get("candle_interval", 5),
+                    "daily_max_loss_triggered": bot_state.get("daily_max_loss_triggered", False),
+                    "max_drawdown":           bot_state.get("max_drawdown", 0.0),
+                    "timestamp":              datetime.now(timezone.utc).isoformat(),
+                },
+            }))
+        except Exception as e:
+            logger.debug(f"[TICK] broadcast_state error: {e}")
 
     async def _broadcast_tick(self, index: str, ltp: float) -> None:
         try:
