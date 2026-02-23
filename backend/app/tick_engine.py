@@ -44,6 +44,18 @@ class TickEngine:
         self._task: Optional[asyncio.Task] = None
         self._last_candle_ts: Optional[str] = None   # MDS timestamp string, change = new candle
 
+    # ── stubs called by trading_bot.run_loop() ───────────────────────────────
+    # TickEngine reads config on every poll — these are intentional no-ops.
+    # index/interval changes are picked up automatically next cycle.
+
+    def subscribe(self, index_name: str = "NIFTY", candle_interval: int = 5) -> None:
+        """No-op: TickEngine reads selected_index/candle_interval from config directly."""
+        pass
+
+    def set_dhan(self, dhan) -> None:
+        """No-op: TickEngine fetches from MDS, not Dhan directly."""
+        pass
+
     # ── lifecycle ────────────────────────────────────────────────────────────
 
     async def start(self) -> None:
