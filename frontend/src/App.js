@@ -132,7 +132,26 @@ function App() {
     }
   }, []);
 
-  // ── Single WebSocket ──────────────────────────────────────────────────────
+  // ── Polling fallback — refresh logs, trades, and status every 5s ──────────
+  useEffect(() => {
+    const interval = setInterval(async () => {
+      try {
+        const [logsRes, tradesRes, statusRes, summaryRes] = await Promise.all([
+          axios.get(`${API}/logs?limit=100`),
+          axios.get(`${API}/trades`),
+          axios.get(`${API}/status`),
+          axios.get(`${API}/summary`),
+        ]);
+        setLogs(logsRes.data);
+        setTrades(tradesRes.data);
+        setBotStatus(prev => ({ ...prev, ...statusRes.data }));
+        setSummary(prev => ({ ...prev, ...summaryRes.data }));
+      } catch (err) {
+        // silent — WS is primary, polling is fallback
+      }
+    }, 5000);
+    return () => clearInterval(interval);
+  }, []);
   useEffect(() => {
     fetchData();
 
@@ -209,6 +228,11 @@ function App() {
             });
           } else {
             setPosition({ has_position: false });
+          }
+
+          // Sync trading_enabled back into config so Controls panel toggle stays accurate
+          if (u.trading_enabled !== undefined) {
+            setConfig(prev => ({ ...prev, trading_enabled: u.trading_enabled }));
           }
 
           // Re-subscribe to TickEngine if index changed remotely

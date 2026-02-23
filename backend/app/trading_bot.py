@@ -2029,7 +2029,13 @@ class TradingBot:
                     while self.current_position is not None:
                         try:
                             ltp = bot_state.get('current_option_ltp') or 0.0
-                            await self.check_trailing_sl(float(ltp))
+                            if float(ltp) > 0:
+                                # Step 1: update trailing SL level
+                                await self.check_trailing_sl(float(ltp))
+                                # Step 2: check if LTP has breached the SL/target → exit
+                                exited = await self.check_tick_sl(float(ltp))
+                                if exited:
+                                    break
                             # Enforce max trade duration from the monitor as well
                             try:
                                 max_dur = int(config.get('max_trade_duration_seconds', 0) or 0)
@@ -2087,4 +2093,3 @@ class TradingBot:
             'index_name': index_name,
             'created_at': datetime.now(timezone.utc).isoformat()
         }))
-
