@@ -408,9 +408,8 @@ class TradingBot:
         # Never mix live option quotes with replay/synthetic testing.
         if bool(config.get('paper_replay_enabled', False)):
             return False
-        if bool(config.get('bypass_market_hours', False)):
-            return False
-        return bool(is_market_open())
+        # Allow live quotes during market hours OR when bypass is on (manual testing)
+        return bool(is_market_open()) or bool(config.get('bypass_market_hours', False))
 
     async def _paper_upgrade_sim_position_to_live(self) -> bool:
         """Try switching a SIM_* paper position to a real option security_id.
