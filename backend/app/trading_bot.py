@@ -420,7 +420,7 @@ class TradingBot:
             base_url = str(config.get('mds_base_url', '') or '').strip()
 
             candles = []
-            if provider == 'mds' and base_url and date_ist:
+            if base_url and date_ist:
                 # Consume-only replay: pull historical candles for the selected IST date
                 # from market-data-service (TimescaleDB) and replay them locally.
                 from mds_client import fetch_candles_for_ist_date
@@ -447,7 +447,7 @@ class TradingBot:
             self._paper_replay_pos = 0
             self._paper_replay_htf_elapsed = 0
 
-            src = "MDS" if (provider == 'mds' and base_url and date_ist) else "SQLITE"
+            src = "MDS" if (base_url and date_ist) else "SQLITE"
             logger.info(f"[REPLAY] Loaded {len(self._paper_replay_candles)} candles | Source={src} | Index={index_name} Interval={interval}s DateIST={date_ist or 'latest'}")
         except Exception as e:
             self._paper_replay_candles = []
