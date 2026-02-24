@@ -1221,34 +1221,7 @@ class TradingBot:
             if self._min_hold_active():
                 return False
 
-            # ── Exit 1: MDS score-based exit (neutral / reversal / momentum loss) ───
-            # Compute slow momentum from recent score history (last 3 scores)
-            try:
-                recent = list(runner._recent_scores) if hasattr(runner, '_recent_scores') else []
-                slow_mom = (recent[-1] - recent[-3]) / 2.0 if len(recent) >= 3 else 0.0
-            except Exception:
-                slow_mom = slope
-
-            exit_decision = runner.decide_exit(
-                position_type=position_type,
-                score=score,
-                slope=slope,
-                slow_mom=slow_mom,
-            )
-            if exit_decision.should_exit and current_ltp > 0:
-                pnl = (current_ltp - self.entry_price) * qty
-                logger.info(
-                    f"[EXIT_MDS] ✓ {exit_decision.reason} | {position_type} | "
-                    f"LTP={current_ltp:.2f} Score={score:.1f} Slope={slope:.2f} | PnL=₹{pnl:.2f}"
-                )
-                self._exit_score_flip_count = 0
-                closed = await self.close_position(current_ltp, pnl, exit_decision.reason)
-                if closed:
-                    return True
-            elif not exit_decision.should_exit:
-                logger.debug(f"[EXIT_MDS] No exit | Score={score:.1f} Slope={slope:.2f} SlowMom={slow_mom:.2f}")
-
-            # ── Exit 2: HTF flip counter (2 consecutive candles against position) ──
+            # ── HTF flip counter: exit after 2 consecutive candles against position ──
             htf_against = (
                 (position_type == 'CE' and htf_score < -1.0) or
                 (position_type == 'PE' and htf_score >  1.0)
