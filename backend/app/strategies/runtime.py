@@ -82,6 +82,21 @@ class ScoreMdsRuntime(StrategyRuntime):
         ):
             return
 
+        # Always run exit logic if in position
+        exited = False
+        if bot.current_position:
+            exited = await bot.process_mds_on_close(ctx.mds_snapshot, float(ctx.close))
+            if exited:
+                bot.last_exit_candle_time = ctx.current_candle_time
+            # After exit logic, if still in position, skip entry logic and log reason
+            if bot.current_position:
+                logger = getattr(bot, 'logger', None)
+                if logger is None:
+                    import logging
+                    logger = logging.getLogger("trading_bot")
+                logger.info("[ENTRY_DECISION] NO | Reason=position_open (MDS)")
+                return
+        # If not in position, run entry logic
         exited = await bot.process_mds_on_close(ctx.mds_snapshot, float(ctx.close))
         if exited:
             bot.last_exit_candle_time = ctx.current_candle_time
