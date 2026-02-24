@@ -409,21 +409,18 @@ class TradingBot:
         return False
 
     async def _init_paper_replay(self) -> None:
-        """Load candle data from DB for after-hours paper replay."""
+        """Load candle data from TSDB (MDS) or SQLite for after-hours paper replay."""
         try:
             index_name = config.get('selected_index', 'NIFTY')
             interval = int(config.get('candle_interval', 5) or 5)
             date_ist = str(config.get('paper_replay_date_ist', '') or '').strip() or None
-
-            provider = str(config.get('market_data_provider', 'dhan') or 'dhan').strip().lower()
             base_url = str(config.get('mds_base_url', '') or '').strip()
 
             candles = []
-            if provider == 'mds' and base_url and date_ist:
-                # Consume-only replay: pull historical candles for the selected IST date
-                # from market-data-service (TimescaleDB) and replay them locally.
+            if base_url and date_ist:
+                # Primary: fetch from TSDB via market-data-service
                 from mds_client import fetch_candles_for_ist_date
-
+                logger.info(f"[REPLAY] Fetching from TSDB | URL={base_url} Index={index_name} Interval={interval}s Date={date_ist}")
                 candles = await fetch_candles_for_ist_date(
                     base_url=base_url,
                     symbol=index_name,
@@ -431,22 +428,27 @@ class TradingBot:
                     date_ist=date_ist,
                     limit=200000,
                 )
+                src = "TSDB"
+            elif base_url and not date_ist:
+                logger.warning("[REPLAY] mds_base_url is set but paper_replay_date_ist is empty — cannot fetch TSDB candles without a date")
+                candles = []
+                src = "TSDB(no date)"
             else:
-                # Legacy fallback: backend SQLite candle_data table (may be empty in consume-only setups)
+                # Fallback: SQLite candle_data table
+                logger.info(f"[REPLAY] mds_base_url not configured — falling back to SQLite")
                 from database import get_candle_data_for_replay
-
                 candles = await get_candle_data_for_replay(
                     index_name=index_name,
                     interval_seconds=interval,
                     date_ist=date_ist,
                     limit=20000,
                 )
+                src = "SQLITE"
 
             self._paper_replay_candles = candles or []
             self._paper_replay_pos = 0
             self._paper_replay_htf_elapsed = 0
 
-            src = "MDS" if (provider == 'mds' and base_url and date_ist) else "SQLITE"
             logger.info(f"[REPLAY] Loaded {len(self._paper_replay_candles)} candles | Source={src} | Index={index_name} Interval={interval}s DateIST={date_ist or 'latest'}")
         except Exception as e:
             self._paper_replay_candles = []
