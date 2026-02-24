@@ -117,7 +117,7 @@ config = {
     # Paper replay (use recorded DB candles instead of synthetic)
     "paper_replay_enabled": False,
     "paper_replay_date_ist": "",  # YYYY-MM-DD; empty means latest candles
-    "paper_replay_speed": 10.0,  # 1.0 = real-time, 10.0 = 10x faster
+    "paper_replay_speed": 1.0,  # 1.0 = real-time, 10.0 = 10x faster
 
     # Paper mode quotes
     # If True: when market is open, paper trades will use LIVE option LTP (via Dhan)
