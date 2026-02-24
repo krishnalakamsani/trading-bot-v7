@@ -267,6 +267,13 @@ class TradingBot:
         if not (high > 0 and low < float('inf') and close > 0):
             return
 
+        # Log FIRST — before any computation so it always appears even if something below fails
+        in_pos = "IN_POSITION" if self.current_position else "SCANNING"
+        logger.info(
+            f"[CANDLE CLOSE #{candle_number}] {index_name} | "
+            f"H={high:.2f} L={low:.2f} C={close:.2f} | State={in_pos}"
+        )
+
         indicator_value, signal = self.indicator.add_candle(high, low, close)
         macd_value = 0.0
         if self.macd:
@@ -331,16 +338,6 @@ class TradingBot:
             bot_state['signal_status'] = "sell"
         else:
             bot_state['signal_status'] = "waiting"
-
-        # Always log candle close (even while indicators warm up)
-        st_txt = f"{indicator_value:.2f}" if isinstance(indicator_value, (int, float)) else "NA"
-        macd_txt = f"{macd_value:.4f}" if isinstance(macd_value, (int, float)) else "NA"
-        signal_txt = signal if signal else "NONE"
-        logger.info(
-            f"[CANDLE CLOSE #{candle_number}] {index_name} | "
-            f"H={high:.2f} L={low:.2f} C={close:.2f} | "
-            f"ST={st_txt} | MACD={macd_txt} | Signal={signal_txt}"
-        )
 
         # Save candle data for analysis (optional; disabled by default to keep DB small)
         if indicator_value and config.get('store_candle_data', False):
@@ -1081,8 +1078,13 @@ class TradingBot:
                 try:
                     await asyncio.wait_for(tick_engine.candle_event.wait(), timeout=1.0)
                 except asyncio.TimeoutError:
-                    # No new candle yet — heartbeat task handles LTP update + broadcast
                     continue
+
+                # Drain ALL candles that fired since we last processed
+                tick_engine.candle_event.clear()
+                if tick_engine._candle_seq == tick_engine._last_seq_seen:
+                    continue  # spurious wakeup
+                tick_engine._last_seq_seen = tick_engine._candle_seq
 
                 # A new candle just closed
                 candle = tick_engine.last_closed_candle
@@ -1174,16 +1176,14 @@ class TradingBot:
 
             # Respect min-hold to avoid churn
             if self._min_hold_active():
+                logger.debug("[EXIT] Min hold active — skipping exit checks")
                 return False
 
             score = float(getattr(mds_snapshot, 'score', 0.0) or 0.0)
             slope = float(getattr(mds_snapshot, 'slope', 0.0) or 0.0)
+            current_ltp = float(bot_state.get('current_option_ltp') or 0.0)
 
-            # ── HTF confirmed score-based exit (Option B) ─────────────────────
-            # Extract the next_tf (higher timeframe) score from the snapshot.
-            # This is already computed by ScoreEngine — no extra work.
-            # Require the HTF score to be against the position for 2 consecutive
-            # candles before exiting. Ignores base-TF noise entirely.
+            # Extract HTF score
             htf_score = 0.0
             try:
                 tf_scores = getattr(mds_snapshot, 'tf_scores', {}) or {}
@@ -1194,7 +1194,42 @@ class TradingBot:
             except Exception:
                 htf_score = 0.0
 
-            # Determine if HTF score is against the open position
+            # Log position status every candle so we can see what's happening
+            logger.info(
+                f"[POSITION] {position_type} | LTP={current_ltp:.2f} Entry={self.entry_price:.2f} "
+                f"Profit={current_ltp - self.entry_price:.2f} | "
+                f"Score={score:.1f} Slope={slope:.2f} HTF={htf_score:.1f} | "
+                f"FlipCount={self._exit_score_flip_count}"
+            )
+
+            # ── Exit 1: MDS score-based exit (neutral / reversal / momentum loss) ───
+            # Compute slow momentum from recent score history (last 3 scores)
+            try:
+                recent = list(runner._recent_scores) if hasattr(runner, '_recent_scores') else []
+                slow_mom = (recent[-1] - recent[-3]) / 2.0 if len(recent) >= 3 else 0.0
+            except Exception:
+                slow_mom = slope
+
+            exit_decision = runner.decide_exit(
+                position_type=position_type,
+                score=score,
+                slope=slope,
+                slow_mom=slow_mom,
+            )
+            if exit_decision.should_exit and current_ltp > 0:
+                pnl = (current_ltp - self.entry_price) * qty
+                logger.info(
+                    f"[EXIT_MDS] ✓ {exit_decision.reason} | {position_type} | "
+                    f"LTP={current_ltp:.2f} Score={score:.1f} Slope={slope:.2f} | PnL=₹{pnl:.2f}"
+                )
+                self._exit_score_flip_count = 0
+                closed = await self.close_position(current_ltp, pnl, exit_decision.reason)
+                if closed:
+                    return True
+            elif not exit_decision.should_exit:
+                logger.debug(f"[EXIT_MDS] No exit | Score={score:.1f} Slope={slope:.2f} SlowMom={slow_mom:.2f}")
+
+            # ── Exit 2: HTF flip counter (2 consecutive candles against position) ──
             htf_against = (
                 (position_type == 'CE' and htf_score < -1.0) or
                 (position_type == 'PE' and htf_score >  1.0)
@@ -1203,39 +1238,27 @@ class TradingBot:
             if htf_against:
                 self._exit_score_flip_count += 1
                 logger.info(
-                    f"[EXIT_SCORE] HTF score against position "
-                    f"({self._exit_score_flip_count}/2) | "
+                    f"[EXIT_HTF] HTF against position ({self._exit_score_flip_count}/2) | "
                     f"Position={position_type} HTFScore={htf_score:.2f}"
                 )
             else:
-                # Reset counter — must be consecutive
                 if self._exit_score_flip_count > 0:
-                    logger.debug(
-                        f"[EXIT_SCORE] HTF score recovered — reset flip counter "
-                        f"(was {self._exit_score_flip_count})"
-                    )
+                    logger.info(f"[EXIT_HTF] HTF aligned — reset flip counter (was {self._exit_score_flip_count})")
                 self._exit_score_flip_count = 0
 
-            # Exit only after 2 consecutive HTF candles against position
-            if self._exit_score_flip_count >= 2:
-                current_ltp = bot_state.get('current_option_ltp', 0.0) or 0.0
-                if current_ltp > 0:
-                    exit_price = round(float(current_ltp) / 0.05) * 0.05
-                    pnl = (exit_price - self.entry_price) * qty
-                    logger.info(
-                        f"[EXIT_SCORE] ✓ Confirmed reversal — closing {position_type} | "
-                        f"HTFScore={htf_score:.2f} | PnL=₹{pnl:.2f}"
-                    )
-                    self._exit_score_flip_count = 0
-                    closed = await self.close_position(
-                        exit_price, pnl, "Score Reversal (HTF confirmed)"
-                    )
-                    if closed:
-                        exited = True
+            if self._exit_score_flip_count >= 2 and current_ltp > 0:
+                pnl = (current_ltp - self.entry_price) * qty
+                logger.info(
+                    f"[EXIT_HTF] ✓ Confirmed HTF reversal — closing {position_type} | "
+                    f"HTFScore={htf_score:.2f} | PnL=₹{pnl:.2f}"
+                )
+                self._exit_score_flip_count = 0
+                closed = await self.close_position(current_ltp, pnl, "HTF Score Reversal")
+                if closed:
+                    return True
 
-        # If a position is still open after exit checks, do not run entry logic
+        # If still in position after all exit checks → don't run entry logic
         if self.current_position:
-            logger.info("[ENTRY_DECISION] NO | Reason=position_open (MDS)")
             return False
 
         # No position: entry logic

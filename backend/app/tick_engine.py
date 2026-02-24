@@ -38,11 +38,12 @@ class TickEngine:
     def __init__(self) -> None:
         self.last_closed_candle: Optional[OHLC] = None
         self.last_tick_ltp: float = 0.0
-        # trading loop waits on this; TickEngine sets-then-clears it on each new candle
         self.candle_event: asyncio.Event = asyncio.Event()
+        self._candle_seq: int = 0          # incremented each new candle
+        self._last_seq_seen: int = 0       # run_loop tracks this to detect new candles
 
         self._task: Optional[asyncio.Task] = None
-        self._last_candle_ts: Optional[str] = None   # MDS timestamp string, change = new candle
+        self._last_candle_ts: Optional[str] = None
 
     # ── stubs called by trading_bot.run_loop() ───────────────────────────────
     # TickEngine reads config on every poll — these are intentional no-ops.
@@ -115,9 +116,9 @@ class TickEngine:
                         )
                         self.last_closed_candle = ohlc
                         await self._broadcast_candle(index_name, interval, ohlc)
-                        # Signal trading loop
+                        # Signal trading loop — use seq counter so run_loop never misses a candle
+                        self._candle_seq += 1
                         self.candle_event.set()
-                        self.candle_event.clear()
 
                     # Always broadcast full state_update every tick (single source of truth)
                     await self._broadcast_state()
