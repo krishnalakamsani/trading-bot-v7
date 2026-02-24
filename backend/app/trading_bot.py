@@ -7,7 +7,6 @@ from datetime import datetime, timezone, timedelta
 import logging
 import random
 import math
-import time
 
 from config import bot_state, config, DB_PATH
 from indices import get_index_config, round_to_strike
@@ -265,108 +264,108 @@ class TradingBot:
         close: float,
         current_candle_time: datetime,
     ) -> None:
-        try:
-            # Log FIRST — before any computation so it always appears even if something below fails
-            in_pos = "IN_POSITION" if self.current_position else "SCANNING"
-            logger.info(
-                f"[CANDLE CLOSE #{candle_number}] {index_name} | "
-                f"H={high:.2f} L={low:.2f} C={close:.2f} | State={in_pos}"
-            )
+        if not (high > 0 and low < float('inf') and close > 0):
+            return
 
-            indicator_value, signal = self.indicator.add_candle(high, low, close)
-            macd_value = 0.0
-            if self.macd:
-                macd_line, _macd_cross = self.macd.add_candle(high, low, close)
-                if macd_line is not None:
-                    macd_value = float(macd_line)
+        # Log FIRST — before any computation so it always appears even if something below fails
+        in_pos = "IN_POSITION" if self.current_position else "SCANNING"
+        logger.info(
+            f"[CANDLE CLOSE #{candle_number}] {index_name} | "
+            f"H={high:.2f} L={low:.2f} C={close:.2f} | State={in_pos}"
+        )
 
-            adx_value = None
-            if self.adx:
+        indicator_value, signal = self.indicator.add_candle(high, low, close)
+        macd_value = 0.0
+        if self.macd:
+            macd_line, _macd_cross = self.macd.add_candle(high, low, close)
+            if macd_line is not None:
+                macd_value = float(macd_line)
+
+        adx_value = None
+        if self.adx:
+            try:
+                adx_val, _adx_sig = self.adx.add_candle(high, low, close)
+                if adx_val is not None:
+                    adx_value = float(adx_val)
+            except Exception:
+                adx_value = None
+
+        mds_snapshot = None
+        if config.get('indicator_type') == 'score_mds' and self.score_engine:
+            try:
+                mds_snapshot = self.score_engine.on_base_candle(Candle(high=float(high), low=float(low), close=float(close)))
+
+                bot_state['mds_score'] = float(mds_snapshot.score)
+                bot_state['mds_slope'] = float(mds_snapshot.slope)
+                bot_state['mds_acceleration'] = float(mds_snapshot.acceleration)
+                bot_state['mds_stability'] = float(mds_snapshot.stability)
+                bot_state['mds_confidence'] = float(mds_snapshot.confidence)
+                bot_state['mds_is_choppy'] = bool(mds_snapshot.is_choppy)
+                bot_state['mds_direction'] = str(mds_snapshot.direction)
+
+                # Extract HTF (highest timeframe) score from tf_scores
                 try:
-                    adx_val, _adx_sig = self.adx.add_candle(high, low, close)
-                    if adx_val is not None:
-                        adx_value = float(adx_val)
-                except Exception:
-                    adx_value = None
-
-            mds_snapshot = None
-            if config.get('indicator_type') == 'score_mds' and self.score_engine:
-                try:
-                    mds_snapshot = self.score_engine.on_base_candle(Candle(high=float(high), low=float(low), close=float(close)))
-
-                    bot_state['mds_score'] = float(mds_snapshot.score)
-                    bot_state['mds_slope'] = float(mds_snapshot.slope)
-                    bot_state['mds_acceleration'] = float(mds_snapshot.acceleration)
-                    bot_state['mds_stability'] = float(mds_snapshot.stability)
-                    bot_state['mds_confidence'] = float(mds_snapshot.confidence)
-                    bot_state['mds_is_choppy'] = bool(mds_snapshot.is_choppy)
-                    bot_state['mds_direction'] = str(mds_snapshot.direction)
-
-                    # Extract HTF (highest timeframe) score from tf_scores
-                    try:
-                        tf_scores = getattr(mds_snapshot, 'tf_scores', {}) or {}
-                        if isinstance(tf_scores, dict) and len(tf_scores) >= 2:
-                            next_tf = max(int(k) for k in tf_scores.keys())
-                            next_tf_score = tf_scores.get(next_tf)
-                            htf_score = float(getattr(next_tf_score, 'weighted_score', 0.0) or 0.0)
-                            bot_state['mds_htf_score'] = htf_score
-                            bot_state['mds_htf_timeframe'] = next_tf
-                        else:
-                            bot_state['mds_htf_score'] = 0.0
-                    except Exception:
+                    tf_scores = getattr(mds_snapshot, 'tf_scores', {}) or {}
+                    if isinstance(tf_scores, dict) and len(tf_scores) >= 2:
+                        next_tf = max(int(k) for k in tf_scores.keys())
+                        next_tf_score = tf_scores.get(next_tf)
+                        htf_score = float(getattr(next_tf_score, 'weighted_score', 0.0) or 0.0)
+                        bot_state['mds_htf_score'] = htf_score
+                        bot_state['mds_htf_timeframe'] = next_tf
+                    else:
                         bot_state['mds_htf_score'] = 0.0
-                except Exception as e:
-                    logger.error(f"[MDS] ScoreEngine update failed: {e}", exc_info=True)
-                    mds_snapshot = None
+                except Exception:
+                    bot_state['mds_htf_score'] = 0.0
+            except Exception as e:
+                logger.error(f"[MDS] ScoreEngine update failed: {e}", exc_info=True)
+                mds_snapshot = None
 
-            # Update state if indicator is ready
-            if indicator_value:
-                bot_state['supertrend_value'] = indicator_value if isinstance(indicator_value, (int, float)) else str(indicator_value)
-            if self.macd and self.macd.last_macd is not None:
-                bot_state['macd_value'] = float(self.macd.last_macd)
-            else:
-                bot_state['macd_value'] = macd_value
+        # Update state if indicator is ready
+        if indicator_value:
+            bot_state['supertrend_value'] = indicator_value if isinstance(indicator_value, (int, float)) else str(indicator_value)
+        if self.macd and self.macd.last_macd is not None:
+            bot_state['macd_value'] = float(self.macd.last_macd)
+        else:
+            bot_state['macd_value'] = macd_value
 
-            if adx_value is not None:
-                bot_state['adx_value'] = float(adx_value)
+        if adx_value is not None:
+            bot_state['adx_value'] = float(adx_value)
 
-            # Update signal status (GREEN="buy", RED="sell", None="waiting")
-            if signal == "GREEN":
-                bot_state['signal_status'] = "buy"
-            elif signal == "RED":
-                bot_state['signal_status'] = "sell"
-            else:
-                bot_state['signal_status'] = "waiting"
+        # Update signal status (GREEN="buy", RED="sell", None="waiting")
+        if signal == "GREEN":
+            bot_state['signal_status'] = "buy"
+        elif signal == "RED":
+            bot_state['signal_status'] = "sell"
+        else:
+            bot_state['signal_status'] = "waiting"
 
-            # Save candle data for analysis (optional; disabled by default to keep DB small)
-            if indicator_value and config.get('store_candle_data', False):
-                from database import save_candle_data
+        # Save candle data for analysis (optional; disabled by default to keep DB small)
+        if indicator_value and config.get('store_candle_data', False):
+            from database import save_candle_data
 
-                await save_candle_data(
-                    candle_number=candle_number,
-                    index_name=index_name,
-                    high=high,
-                    low=low,
-                    close=close,
-                    supertrend_value=indicator_value,
-                    macd_value=macd_value,
-                    signal_status=bot_state['signal_status'],
-                    interval_seconds=int(config.get('candle_interval', candle_interval) or candle_interval),
-                )
-
-            runtime = self._get_strategy_runtime()
-            await runtime.on_closed_candle(
-                self,
-                ClosedCandleContext(
-                    candle_interval_seconds=int(candle_interval or 0),
-                    current_candle_time=current_candle_time,
-                    close=float(close),
-                    signal=str(signal or '') if signal else None,
-                    mds_snapshot=mds_snapshot,
-                ),
+            await save_candle_data(
+                candle_number=candle_number,
+                index_name=index_name,
+                high=high,
+                low=low,
+                close=close,
+                supertrend_value=indicator_value,
+                macd_value=macd_value,
+                signal_status=bot_state['signal_status'],
+                interval_seconds=int(config.get('candle_interval', candle_interval) or candle_interval),
             )
-        except Exception as e:
-            logger.error(f"[ERROR] Exception in _handle_closed_candle: {e}", exc_info=True)
+
+        runtime = self._get_strategy_runtime()
+        await runtime.on_closed_candle(
+            self,
+            ClosedCandleContext(
+                candle_interval_seconds=int(candle_interval or 0),
+                current_candle_time=current_candle_time,
+                close=float(close),
+                signal=str(signal or '') if signal else None,
+                mds_snapshot=mds_snapshot,
+            ),
+        )
 
     def _can_place_new_entry_order(self) -> bool:
         cooldown = int(config.get('min_order_cooldown_seconds', 0) or 0)
@@ -420,7 +419,7 @@ class TradingBot:
             base_url = str(config.get('mds_base_url', '') or '').strip()
 
             candles = []
-            if base_url and date_ist:
+            if provider == 'mds' and base_url and date_ist:
                 # Consume-only replay: pull historical candles for the selected IST date
                 # from market-data-service (TimescaleDB) and replay them locally.
                 from mds_client import fetch_candles_for_ist_date
@@ -447,7 +446,7 @@ class TradingBot:
             self._paper_replay_pos = 0
             self._paper_replay_htf_elapsed = 0
 
-            src = "MDS" if (base_url and date_ist) else "SQLITE"
+            src = "MDS" if (provider == 'mds' and base_url and date_ist) else "SQLITE"
             logger.info(f"[REPLAY] Loaded {len(self._paper_replay_candles)} candles | Source={src} | Index={index_name} Interval={interval}s DateIST={date_ist or 'latest'}")
         except Exception as e:
             self._paper_replay_candles = []
@@ -1070,6 +1069,22 @@ class TradingBot:
                         )
 
                     # Replay uses historical DB candles — TickEngine handles broadcasting
+                    # Simulate option LTP from index price movement (replay only — no Dhan calls)
+                    if self.current_position and close > 0:
+                        option_type = self.current_position.get('option_type', 'CE')
+                        entry_index = float(self.current_position.get('entry_index_ltp') or close)
+                        index_move = close - entry_index  # points moved since entry
+                        # Simple delta: CE gains ~0.5pt per 1pt up, PE gains ~0.5pt per 1pt down
+                        delta = 0.5
+                        if option_type == 'CE':
+                            simulated_ltp = max(0.05, self.entry_price + index_move * delta)
+                        else:
+                            simulated_ltp = max(0.05, self.entry_price - index_move * delta)
+                        simulated_ltp = round(round(simulated_ltp / 0.05) * 0.05, 2)
+                        bot_state['current_option_ltp'] = simulated_ltp
+                        # Run tick-level SL/target check using simulated LTP
+                        await self.check_tick_sl(simulated_ltp)
+
                     speed = float(config.get('paper_replay_speed', 10.0) or 10.0)
                     speed = max(0.1, min(100.0, speed))
                     await asyncio.sleep(max(0.05, float(candle_interval) / speed))
@@ -1081,67 +1096,62 @@ class TradingBot:
                 except asyncio.TimeoutError:
                     continue
 
-                try:
-                    # Drain ALL candles that fired since we last processed
-                    tick_engine.candle_event.clear()
-                    if tick_engine._candle_seq == tick_engine._last_seq_seen:
-                        continue  # spurious wakeup
-                    tick_engine._last_seq_seen = tick_engine._candle_seq
+                # Drain ALL candles that fired since we last processed
+                tick_engine.candle_event.clear()
+                if tick_engine._candle_seq == tick_engine._last_seq_seen:
+                    continue  # spurious wakeup
+                tick_engine._last_seq_seen = tick_engine._candle_seq
 
-                    # A new candle just closed
-                    candle = tick_engine.last_closed_candle
-                    if candle is None:
-                        continue
+                # A new candle just closed
+                candle = tick_engine.last_closed_candle
+                if candle is None:
+                    continue
 
-                    high = candle.high
-                    low = candle.low
-                    close = candle.close
+                high = candle.high
+                low = candle.low
+                close = candle.close
 
-                    if not (high > 0 and low < float('inf') and close > 0):
-                        continue
+                if not (high > 0 and low < float('inf') and close > 0):
+                    continue
 
-                    self._set_index_ltp(close)
+                self._set_index_ltp(close)
 
-                    # HTF aggregation from base candles
-                    if config.get('htf_filter_enabled', True) and candle_interval < 60:
-                        htf_high = max(htf_high, high)
-                        htf_low = min(htf_low, low)
-                        htf_close = close
-                        htf_seconds = int(config.get('htf_filter_timeframe', 60) or 60)
-                        htf_elapsed_seconds += candle_interval
-                        if htf_elapsed_seconds >= htf_seconds:
-                            htf_candle_number += 1
-                            if htf_high > 0 and htf_low < float('inf'):
-                                htf_value, htf_signal = self.htf_indicator.add_candle(htf_high, htf_low, htf_close)
-                                self._update_htf_state(htf_value, htf_signal)
-                            htf_high, htf_low, htf_close = 0.0, float('inf'), 0.0
-                            htf_elapsed_seconds = 0
+                # HTF aggregation from base candles
+                if config.get('htf_filter_enabled', True) and candle_interval < 60:
+                    htf_high = max(htf_high, high)
+                    htf_low = min(htf_low, low)
+                    htf_close = close
+                    htf_seconds = int(config.get('htf_filter_timeframe', 60) or 60)
+                    htf_elapsed_seconds += candle_interval
+                    if htf_elapsed_seconds >= htf_seconds:
+                        htf_candle_number += 1
+                        if htf_high > 0 and htf_low < float('inf'):
+                            htf_value, htf_signal = self.htf_indicator.add_candle(htf_high, htf_low, htf_close)
+                            self._update_htf_state(htf_value, htf_signal)
+                        htf_high, htf_low, htf_close = 0.0, float('inf'), 0.0
+                        htf_elapsed_seconds = 0
 
-                    candle_number += 1
-                    try:
-                        await self._handle_closed_candle(
-                            index_name=index_name,
-                            candle_number=candle_number,
-                            candle_interval=candle_interval,
-                            high=high,
-                            low=low,
-                            close=close,
-                            current_candle_time=datetime.now(),
-                        )
-                    except Exception as e:
-                        logger.error(f"[ERROR] Exception in _handle_closed_candle: {e}", exc_info=True)
+                candle_number += 1
+                await self._handle_closed_candle(
+                    index_name=index_name,
+                    candle_number=candle_number,
+                    candle_interval=candle_interval,
+                    high=high,
+                    low=low,
+                    close=close,
+                    current_candle_time=datetime.now(),
+                )
 
-                    # Tick-level SL check after each candle close
-                    if self.current_position and bot_state['current_option_ltp'] > 0:
-                        try:
-                            await self.check_trailing_sl(bot_state['current_option_ltp'])
-                            await self.check_tick_sl(bot_state['current_option_ltp'])
-                        except Exception as e:
-                            logger.error(f"[ERROR] Exception in SL check after candle: {e}", exc_info=True)
-                except Exception as e:
-                    logger.error(f"[ERROR] Exception in candle event processing: {e}", exc_info=True)
+                # Tick-level SL check after each candle close
+                if self.current_position and bot_state['current_option_ltp'] > 0:
+                    await self.check_tick_sl(bot_state['current_option_ltp'])
+
+            except asyncio.CancelledError:
+                break
             except Exception as e:
-                logger.error(f"[ERROR] Exception in trading loop: {e}", exc_info=True)
+                logger.error(f"[ERROR] Trading loop exception: {e}")
+                await asyncio.sleep(5)
+
         # Clean up heartbeat task
         heartbeat_task.cancel()
         try:
@@ -1180,11 +1190,6 @@ class TradingBot:
             if qty <= 0:
                 qty = int(config.get('order_qty', 1)) * index_config['lot_size']
 
-            # Respect min-hold to avoid churn
-            if self._min_hold_active():
-                logger.debug("[EXIT] Min hold active — skipping exit checks")
-                return False
-
             score = float(getattr(mds_snapshot, 'score', 0.0) or 0.0)
             slope = float(getattr(mds_snapshot, 'slope', 0.0) or 0.0)
             current_ltp = float(bot_state.get('current_option_ltp') or 0.0)
@@ -1200,13 +1205,19 @@ class TradingBot:
             except Exception:
                 htf_score = 0.0
 
-            # Log position status every candle so we can see what's happening
+            # Always log position status — BEFORE min_hold check — so every candle is visible
+            held_secs = (datetime.now(timezone.utc) - self.entry_time_utc).total_seconds() if self.entry_time_utc else 0.0
+            min_hold = int(config.get('min_hold_seconds', 0) or 0)
             logger.info(
                 f"[POSITION] {position_type} | LTP={current_ltp:.2f} Entry={self.entry_price:.2f} "
                 f"Profit={current_ltp - self.entry_price:.2f} | "
                 f"Score={score:.1f} Slope={slope:.2f} HTF={htf_score:.1f} | "
-                f"FlipCount={self._exit_score_flip_count}"
+                f"Held={held_secs:.0f}s/{min_hold}s FlipCount={self._exit_score_flip_count}"
             )
+
+            # Respect min-hold to avoid churn
+            if self._min_hold_active():
+                return False
 
             # ── Exit 1: MDS score-based exit (neutral / reversal / momentum loss) ───
             # Compute slow momentum from recent score history (last 3 scores)
@@ -1783,7 +1794,8 @@ class TradingBot:
             'security_id': security_id,
             'index_name': index_name,
             'qty': qty,
-            'entry_time': datetime.now(timezone.utc).isoformat()
+            'entry_time': datetime.now(timezone.utc).isoformat(),
+            'entry_index_ltp': float(bot_state.get('index_ltp') or 0.0),
         }
         self.entry_price = entry_price
         self.trailing_sl = None
@@ -1816,7 +1828,7 @@ class TradingBot:
         self.last_signal = option_type[0].upper() + 'E'  # 'CE' -> 'C', 'PE' -> 'P'
         self.last_signal = 'GREEN' if option_type == 'CE' else 'RED'
         
-        # Save to database in background - don't wait
+        # Save to database in background - don't wait for DB commit
         asyncio.create_task(save_trade({
             'trade_id': trade_id,
             'entry_time': datetime.now(timezone.utc).isoformat(),

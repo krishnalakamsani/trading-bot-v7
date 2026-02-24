@@ -48,6 +48,9 @@ class OptionPriceEngine:
     async def _run(self) -> None:
         from config import config, bot_state
 
+        _last_ltp: float = 0.0
+        _same_count: int = 0
+
         while True:
             try:
                 position = bot_state.get("current_position")
@@ -66,13 +69,26 @@ class OptionPriceEngine:
                             )
                             if option_ltp and float(option_ltp) > 0:
                                 option_ltp = round(round(float(option_ltp) / 0.05) * 0.05, 2)
+
+                                # Detect stale LTP from Dhan
+                                if option_ltp == _last_ltp:
+                                    _same_count += 1
+                                    if _same_count >= 5:
+                                        logger.warning(f"[OPT] ⚠ LTP stuck at {option_ltp} for {_same_count}s — Dhan may be returning stale data")
+                                else:
+                                    if _same_count >= 5:
+                                        logger.info(f"[OPT] LTP unstuck: {_last_ltp} → {option_ltp}")
+                                    _same_count = 0
+                                    _last_ltp = option_ltp
+
                                 bot_state["current_option_ltp"] = option_ltp
-                                logger.debug(f"[OPT] {index_name} option {security_id} LTP={option_ltp}")
                         except Exception as e:
                             logger.debug(f"[OPT] Fetch error: {e}")
                 else:
-                    # No position — reset option LTP
+                    # No position — reset option LTP and stale counters
                     bot_state["current_option_ltp"] = 0.0
+                    _last_ltp = 0.0
+                    _same_count = 0
 
             except asyncio.CancelledError:
                 break
