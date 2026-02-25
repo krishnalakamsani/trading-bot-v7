@@ -1237,15 +1237,13 @@ class TradingBot:
             # Extract HTF score
             htf_score = 0.0
             try:
-                            try:
-                                await self._mds_set_pause(True)
-                            except Exception:
-                                pass
-                            state_machine.entry_confirmed()
-                            self.task = asyncio.create_task(self.run_loop())
+                tf_scores = getattr(mds_snapshot, 'tf_scores', {}) or {}
+                if isinstance(tf_scores, dict) and len(tf_scores) >= 2:
                     next_tf = max(int(k) for k in tf_scores.keys())
                     next_tf_score = tf_scores.get(next_tf)
                     htf_score = float(getattr(next_tf_score, 'weighted_score', 0.0) or 0.0)
+                else:
+                    htf_score = 0.0
             except Exception:
                 htf_score = 0.0
 
