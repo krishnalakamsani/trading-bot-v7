@@ -430,6 +430,62 @@ class TradingBot:
         except Exception as e:
             logger.debug(f"[MDS] control request failed: {e}")
 
+    async def _htf_supertrend_filter(self) -> str | None:
+        """When using 5s candles, compute two 1m SuperTrend signals (7,4) and (10,3).
+
+        Returns 'CE' if both are GREEN, 'PE' if both are RED, otherwise None.
+        """
+        try:
+            interval = int(config.get('candle_interval', 5) or 5)
+            if interval != 5:
+                return None
+
+            base_url = str(config.get('mds_base_url', '') or '').strip()
+            if not base_url:
+                return None
+
+            index_name = str(config.get('selected_index', 'NIFTY') or 'NIFTY').strip().upper()
+            from mds_client import fetch_last_candles
+
+            # Fetch recent 1m candles (enough for st period 10)
+            candles = await fetch_last_candles(
+                base_url=base_url,
+                symbol=index_name,
+                timeframe_seconds=60,
+                limit=120,
+            )
+            if not candles or len(candles) < 12:
+                return None
+
+            st1 = SuperTrend(period=7, multiplier=4)
+            st2 = SuperTrend(period=10, multiplier=3)
+            sig1 = None
+            sig2 = None
+
+            for row in candles:
+                try:
+                    high = float(row.get('high') or 0.0)
+                    low = float(row.get('low') or 0.0)
+                    close = float(row.get('close') or 0.0)
+                except Exception:
+                    continue
+                if high <= 0 or low <= 0 or close <= 0:
+                    continue
+                _, s1 = st1.add_candle(high, low, close)
+                _, s2 = st2.add_candle(high, low, close)
+                if s1:
+                    sig1 = s1
+                if s2:
+                    sig2 = s2
+
+            if sig1 == 'GREEN' and sig2 == 'GREEN':
+                return 'CE'
+            if sig1 == 'RED' and sig2 == 'RED':
+                return 'PE'
+            return None
+        except Exception:
+            return None
+
     async def _init_paper_replay(self) -> None:
         """Load candle data from TSDB (MDS) or SQLite for after-hours paper replay."""
         try:
@@ -1373,6 +1429,14 @@ class TradingBot:
         fixed_lots = int(config.get('order_qty', 1) or 1)
 
         option_type = entry_decision.option_type or ('CE' if direction == 'CE' else 'PE')
+        # Apply optional HTF 1m SuperTrend filter for 5s candles
+        try:
+            htf_req = await self._htf_supertrend_filter()
+            if htf_req and htf_req != option_type:
+                logger.info(f"[ENTRY_DECISION] NO | Reason=htf_mismatch_filter | HTF={htf_req} Expected={option_type}")
+                return False
+        except Exception:
+            pass
         atm_strike = round_to_strike(index_ltp, index_name)
 
         logger.info(
@@ -1598,6 +1662,14 @@ class TradingBot:
         # That behavior is replaced by candle-level flip detection via the `flipped` flag.
         
         option_type = str(entry_decision.option_type or '').strip().upper() or ('PE' if signal == 'RED' else 'CE')
+        # Apply optional HTF 1m SuperTrend filter for 5s candles
+        try:
+            htf_req = await self._htf_supertrend_filter()
+            if htf_req and htf_req != option_type:
+                logger.info(f"[ENTRY_DECISION] NO | Reason=htf_mismatch_filter | HTF={htf_req} Expected={option_type}")
+                return False
+        except Exception:
+            pass
         atm_strike = round_to_strike(index_ltp, index_name)
         
         # Log signal details
