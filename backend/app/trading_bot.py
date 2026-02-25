@@ -1238,12 +1238,17 @@ class TradingBot:
             htf_score = 0.0
             try:
                 tf_scores = getattr(mds_snapshot, 'tf_scores', {}) or {}
-                if isinstance(tf_scores, dict) and len(tf_scores) >= 2:
-                    next_tf = max(int(k) for k in tf_scores.keys())
-                    next_tf_score = tf_scores.get(next_tf)
-                    htf_score = float(getattr(next_tf_score, 'weighted_score', 0.0) or 0.0)
-                else:
-                    htf_score = 0.0
+                if isinstance(tf_scores, dict) and tf_scores:
+                    keys = []
+                    for k in tf_scores.keys():
+                        try:
+                            keys.append(int(k))
+                        except Exception:
+                            continue
+                    if keys:
+                        next_tf = max(keys)
+                        next_tf_score = tf_scores.get(str(next_tf)) or tf_scores.get(next_tf)
+                        htf_score = float(getattr(next_tf_score, 'weighted_score', 0.0) or 0.0)
             except Exception:
                 htf_score = 0.0
 
