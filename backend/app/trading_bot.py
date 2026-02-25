@@ -938,7 +938,8 @@ class TradingBot:
 
         state_machine.exit_confirmed()
         try:
-            await self._mds_set_pause(False)
+            if bool(config.get('pause_mds_on_entry', False)):
+                await self._mds_set_pause(False)
         except Exception:
             pass
         # Cooldown phase ends immediately — min_order_cooldown_seconds is enforced
@@ -1834,7 +1835,8 @@ class TradingBot:
 
         state_machine.entry_confirmed()
         try:
-            await self._mds_set_pause(True)
+            if bool(config.get('pause_mds_on_entry', False)):
+                await self._mds_set_pause(True)
         except Exception:
             pass
 
