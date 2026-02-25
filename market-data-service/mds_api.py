@@ -19,6 +19,40 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Market Data Service", version="1.0.0")
 
+# Set by the service runner so API endpoints can control the collector
+_mds_instance = None
+
+
+def set_mds_instance(mds):
+    global _mds_instance
+    _mds_instance = mds
+
+
+@app.get("/v1/control/status")
+async def control_status():
+    """Return collector status."""
+    if _mds_instance is None:
+        return {"running": False, "paused": False}
+    return {"running": bool(_mds_instance.running), "paused": bool(getattr(_mds_instance, '_paused', False))}
+
+
+@app.post("/v1/control/pause")
+async def control_pause():
+    """Pause the collector (keeps service alive)."""
+    if _mds_instance is None:
+        return {"ok": False, "error": "no_mds"}
+    _mds_instance.pause()
+    return {"ok": True, "paused": True}
+
+
+@app.post("/v1/control/resume")
+async def control_resume():
+    """Resume the collector if paused."""
+    if _mds_instance is None:
+        return {"ok": False, "error": "no_mds"}
+    _mds_instance.resume()
+    return {"ok": True, "paused": False}
+
 
 @app.on_event("startup")
 async def _startup():

@@ -7,6 +7,7 @@ from datetime import datetime, timezone, timedelta
 import logging
 import random
 import math
+import httpx
 
 from config import bot_state, config, DB_PATH
 from indices import get_index_config, round_to_strike
@@ -407,6 +408,27 @@ class TradingBot:
                 return False
         logger.warning("[ERROR] Dhan API credentials not configured")
         return False
+
+    async def _mds_set_pause(self, pause: bool) -> None:
+        """Tell the market-data-service to pause/resume collection when configured.
+
+        Non-fatal: logs errors but does not interrupt trading flow.
+        """
+        try:
+            base_url = str(config.get('mds_base_url', '') or '').strip()
+            if not base_url:
+                return
+            endpoint = '/v1/control/pause' if pause else '/v1/control/resume'
+            url = base_url.rstrip('/') + endpoint
+            async with httpx.AsyncClient(timeout=2.0) as client:
+                resp = await client.post(url)
+                # ignore content, but raise for non-2xx
+                if resp.status_code >= 400:
+                    logger.debug(f"[MDS] control {endpoint} failed: {resp.status_code} {resp.text}")
+                else:
+                    logger.info(f"[MDS] control {endpoint} OK")
+        except Exception as e:
+            logger.debug(f"[MDS] control request failed: {e}")
 
     async def _init_paper_replay(self) -> None:
         """Load candle data from TSDB (MDS) or SQLite for after-hours paper replay."""
@@ -915,6 +937,10 @@ class TradingBot:
         self._exit_score_direction = ''
 
         state_machine.exit_confirmed()
+        try:
+            await self._mds_set_pause(False)
+        except Exception:
+            pass
         # Cooldown phase ends immediately — min_order_cooldown_seconds is enforced
         # by _can_place_new_entry_order(), so we transition to SCANNING right away.
         state_machine.cooldown_done()
@@ -1211,8 +1237,12 @@ class TradingBot:
             # Extract HTF score
             htf_score = 0.0
             try:
-                tf_scores = getattr(mds_snapshot, 'tf_scores', {}) or {}
-                if isinstance(tf_scores, dict) and len(tf_scores) >= 2:
+                            try:
+                                await self._mds_set_pause(True)
+                            except Exception:
+                                pass
+                            state_machine.entry_confirmed()
+                            self.task = asyncio.create_task(self.run_loop())
                     next_tf = max(int(k) for k in tf_scores.keys())
                     next_tf_score = tf_scores.get(next_tf)
                     htf_score = float(getattr(next_tf_score, 'weighted_score', 0.0) or 0.0)
@@ -1800,6 +1830,10 @@ class TradingBot:
             state_machine.placing_entry()
 
         state_machine.entry_confirmed()
+        try:
+            await self._mds_set_pause(True)
+        except Exception:
+            pass
 
         bot_state['current_position'] = self.current_position
         bot_state['entry_price'] = self.entry_price

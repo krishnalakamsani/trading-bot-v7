@@ -25,10 +25,12 @@ async def _run():
 
     from dhan_api import DhanAPI
     from market_data_service import MarketDataService
-    from mds_api import app
+    from mds_api import app, set_mds_instance
 
     dhan = DhanAPI(dhan_access, dhan_client)
     mds  = MarketDataService(dhan)
+    # Register MDS instance with API so endpoints can control the collector
+    set_mds_instance(mds)
 
     # ── graceful shutdown ─────────────────────────────────────────────────────
     stop_event = asyncio.Event()

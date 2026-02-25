@@ -48,10 +48,23 @@ class MarketDataService:
     def __init__(self, dhan_api) -> None:
         self.dhan = dhan_api
         self.running = False
+        self._paused = False
         self._task: asyncio.Task | None = None
         # builders[symbol][timeframe] = CandleBuilder
         self._builders: dict[str, dict[int, CandleBuilder]] = {}
         self._error_backoff: float = 0.0
+
+    # Pause/resume collector without fully stopping the service
+    def pause(self) -> None:
+        """Pause collection (collector loop will sleep while paused)."""
+        self._paused = True
+        logger.info("[MDS] Paused collection")
+
+    def resume(self) -> None:
+        """Resume collection."""
+        if self._paused:
+            self._paused = False
+            logger.info("[MDS] Resumed collection")
 
     async def start(self) -> None:
         if self.running:
@@ -83,6 +96,10 @@ class MarketDataService:
 
         while self.running:
             try:
+                # If paused, sleep briefly and skip fetching
+                if getattr(self, '_paused', False):
+                    await asyncio.sleep(1.0)
+                    continue
                 if not _is_market_open():
                     # Log once per minute so we know it's alive but not spamming
                     now_ist = datetime.now(_IST)
