@@ -15,7 +15,9 @@ const TopBar = ({ onSettingsClick }) => {
     return `${s / 3600}h`;
   };
 
-  const marketOpen = botStatus.market_status === "open";
+  const marketStatus = botStatus.market_status; // "open" | "closed" | "" | undefined
+  const marketOpen = marketStatus === "open";
+  const marketKnown = marketStatus === "open" || marketStatus === "closed";
 
   return (
     <div
@@ -44,10 +46,10 @@ const TopBar = ({ onSettingsClick }) => {
       {/* Center status pills */}
       <div className="hidden md:flex items-center gap-2">
         {/* Market status */}
-        <span className={`status-badge ${marketOpen ? "status-running" : "status-error"}`} data-testid="market-status-badge">
+        <span className={`status-badge ${marketOpen ? "status-running" : marketKnown ? "status-error" : ""}`} data-testid="market-status-badge">
           <span className={`w-1.5 h-1.5 rounded-full ${marketOpen ? "pulse-dot" : ""}`}
-            style={{ background: marketOpen ? "var(--accent)" : "var(--loss)" }} />
-          {marketOpen ? "Market Open" : "Market Closed"}
+            style={{ background: marketOpen ? "var(--accent)" : marketKnown ? "var(--loss)" : "var(--text-dim)" }} />
+          {!marketKnown ? "Connecting…" : marketOpen ? "Market Open" : "Market Closed"}
           {botStatus.market_details && (
             <span style={{ opacity: 0.6 }}>{botStatus.market_details.current_time_ist}</span>
           )}

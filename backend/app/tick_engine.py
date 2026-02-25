@@ -154,6 +154,10 @@ class TickEngine:
             from config import bot_state, config
             from bot_state_machine import state_machine
             from datetime import datetime, timezone
+            from utils import is_market_open
+
+            # Always recompute on every tick — never stale
+            bot_state["market_status"] = "open" if is_market_open() else "closed"
 
             asyncio.create_task(manager.broadcast({
                 "type": "state_update",
@@ -168,7 +172,7 @@ class TickEngine:
                     "is_running":             bot_state.get("is_running", False),
                     "bot_phase":              state_machine.phase_name,
                     "mode":                   bot_state.get("mode", "paper"),
-                    "market_status":          bot_state.get("market_status", ""),
+                    "market_status":          bot_state.get("market_status", "closed"),
                     "mds_score":              bot_state.get("mds_score", 0.0),
                     "mds_slope":              bot_state.get("mds_slope", 0.0),
                     "mds_acceleration":       bot_state.get("mds_acceleration", 0.0),
