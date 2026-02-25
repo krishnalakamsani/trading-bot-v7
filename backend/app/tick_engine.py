@@ -44,6 +44,7 @@ class TickEngine:
 
         self._task: Optional[asyncio.Task] = None
         self._last_candle_ts: Optional[str] = None
+        self._last_candle_recv_time: Optional[float] = None  # time.time() of last new candle
 
     # ── stubs called by trading_bot.run_loop() ───────────────────────────────
     # TickEngine reads config on every poll — these are intentional no-ops.
@@ -107,6 +108,7 @@ class TickEngine:
                     # New candle closed when MDS timestamp advances
                     if ts_str and ts_str != self._last_candle_ts and ltp > 0:
                         self._last_candle_ts = ts_str
+                        self._last_candle_recv_time = time.time()
                         ohlc = OHLC(
                             open  = float(candle.get("open") or ltp),
                             high  = float(high),
@@ -119,9 +121,27 @@ class TickEngine:
                         # Signal trading loop — use seq counter so run_loop never misses a candle
                         self._candle_seq += 1
                         self.candle_event.set()
+                    elif ts_str and ts_str == self._last_candle_ts:
+                        # Same candle — check for stall
+                        stale_s = time.time() - (self._last_candle_recv_time or time.time())
+                        if stale_s > interval * 2:
+                            logger.warning(
+                                f"[TICK] ⚠ MDS stall: no new candle for {stale_s:.0f}s "
+                                f"(expected every {interval}s) | last_ts={self._last_candle_ts}"
+                            )
+                else:
+                    # MDS returned no data — log stall if position is open
+                    from config import bot_state as _bs
+                    if _bs.get("current_position"):
+                        stale_s = time.time() - (self._last_candle_recv_time or time.time())
+                        if stale_s > interval * 2:
+                            logger.warning(
+                                f"[TICK] ⚠ MDS returned no data for {stale_s:.0f}s — "
+                                f"candle events paused, position exits may be delayed"
+                            )
 
-                    # Always broadcast full state_update every tick (single source of truth)
-                    await self._broadcast_state()
+                # Always broadcast state every tick — regardless of whether a new candle arrived
+                await self._broadcast_state()
 
                 await asyncio.sleep(max(0.5, poll_s))
 

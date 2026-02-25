@@ -962,6 +962,7 @@ class TradingBot:
 
         # ── SL/Target checker (1s) ────────────────────────────────────────────
         async def _state_heartbeat():
+            _last_pos_log = 0.0
             while self.running:
                 try:
                     if self.current_position:
@@ -969,6 +970,17 @@ class TradingBot:
                         if ltp > 0:
                             await self.check_trailing_sl(ltp)
                             await self.check_tick_sl(ltp)
+                        # Log position alive every 10s even without candle events (MDS stall visibility)
+                        import time as _time
+                        now = _time.time()
+                        if now - _last_pos_log >= 10.0:
+                            _last_pos_log = now
+                            position_type = self.current_position.get('option_type', '?')
+                            held = (datetime.now(timezone.utc) - self.entry_time_utc).total_seconds() if self.entry_time_utc else 0
+                            logger.info(
+                                f"[HEARTBEAT] {position_type} | LTP={ltp:.2f} Entry={self.entry_price:.2f} "
+                                f"Profit={ltp - self.entry_price:.2f} | Held={held:.0f}s"
+                            )
                 except Exception as e:
                     logger.error(f"[SL] Checker error: {e}", exc_info=True)
                 await asyncio.sleep(1.0)
@@ -1284,12 +1296,12 @@ class TradingBot:
 
         ready = bool(getattr(mds_snapshot, 'ready', False))
         if not ready:
-            logger.debug("[MDS] Skipping - Engine not ready yet (warming up)")
+            logger.info(f"[ENTRY_DECISION] NO | Reason=mds_not_ready | Score={score:.2f}")
             return False
 
         is_choppy = bool(getattr(mds_snapshot, 'is_choppy', False))
         if is_choppy:
-            logger.debug("[MDS] Skipping - Market is choppy")
+            logger.info(f"[ENTRY_DECISION] NO | Reason=choppy | Score={score:.2f} Slope={slope:.2f}")
             return False
 
         confirm_needed = 1 if bot_state.get('mode') == 'paper' else 2

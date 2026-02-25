@@ -73,7 +73,7 @@ class SuperTrendRuntime(StrategyRuntime):
 class ScoreMdsRuntime(StrategyRuntime):
     async def on_closed_candle(self, bot: Any, ctx: ClosedCandleContext) -> None:
         if ctx.mds_snapshot is None:
-            logger.debug("[RUNTIME] Skipping — mds_snapshot is None")
+            logger.info("[ENTRY_DECISION] NO | Reason=mds_snapshot_missing")
             return
 
         if bool(ctx.enforce_recent_exit_cooldown) and self._recent_exit_cooldown_active(
@@ -81,7 +81,7 @@ class ScoreMdsRuntime(StrategyRuntime):
             current_candle_time=ctx.current_candle_time,
             candle_interval_seconds=ctx.candle_interval_seconds,
         ):
-            logger.debug("[RUNTIME] Skipping — recent exit cooldown active")
+            logger.info("[ENTRY_DECISION] NO | Reason=recent_exit_cooldown")
             return
 
         exited = await bot.process_mds_on_close(ctx.mds_snapshot, float(ctx.close))
