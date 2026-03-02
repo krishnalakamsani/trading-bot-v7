@@ -122,17 +122,20 @@ class TickEngine:
                         self._candle_seq += 1
                         self.candle_event.set()
                     elif ts_str and ts_str == self._last_candle_ts:
-                        # Same candle — check for stall
-                        stale_s = time.time() - (self._last_candle_recv_time or time.time())
-                        if stale_s > interval * 2:
-                            logger.warning(
-                                f"[TICK] ⚠ MDS stall: no new candle for {stale_s:.0f}s "
-                                f"(expected every {interval}s) | last_ts={self._last_candle_ts}"
-                            )
+                        # Same candle — check for stall only if market is actually open
+                        from utils import is_market_open
+                        if is_market_open():
+                            stale_s = time.time() - (self._last_candle_recv_time or time.time())
+                            if stale_s > interval * 2:
+                                logger.warning(
+                                    f"[TICK] ⚠ MDS stall: no new candle for {stale_s:.0f}s "
+                                    f"(expected every {interval}s) | last_ts={self._last_candle_ts}"
+                                )
                 else:
-                    # MDS returned no data — log stall if position is open
+                    # MDS returned no data — log stall if market is open and position is open
                     from config import bot_state as _bs
-                    if _bs.get("current_position"):
+                    from utils import is_market_open
+                    if is_market_open() and _bs.get("current_position"):
                         stale_s = time.time() - (self._last_candle_recv_time or time.time())
                         if stale_s > interval * 2:
                             logger.warning(

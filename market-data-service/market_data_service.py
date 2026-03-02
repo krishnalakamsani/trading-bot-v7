@@ -23,11 +23,15 @@ _IST = timezone(timedelta(hours=5, minutes=30))
 
 
 def _is_market_open() -> bool:
-    """True if current IST time is within market hours on a weekday."""
+    """True if current IST time is within market hours on a weekday.
+    
+    Note: Starts polling at 9:14:55 (5s before market open at 9:15) to ensure
+    we capture the first tick exactly at market open, not missing initial data.
+    """
     now_ist = datetime.now(_IST)
     if now_ist.weekday() >= 5:          # Saturday=5, Sunday=6
         return False
-    market_open  = now_ist.replace(hour=9,  minute=15, second=0, microsecond=0)
+    market_open  = now_ist.replace(hour=9,  minute=14, second=55, microsecond=0)  # Start 5s early
     market_close = now_ist.replace(hour=15, minute=30, second=0, microsecond=0)
     return market_open <= now_ist <= market_close
 
