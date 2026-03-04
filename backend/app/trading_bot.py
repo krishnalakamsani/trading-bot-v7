@@ -48,6 +48,8 @@ class TradingBot:
         self._last_entries_paused_log_time = None
         self.entry_time_utc = None  # datetime for min-hold exit protection
         self.last_order_time_utc = None  # datetime for order cooldown (entry/exit pacing)
+        self._1min_supertrend_ready = False  # Flag to ensure warmup completed
+        self._1min_candle_just_closed = False  # Flag: 1min candle just closed (for exit check)
         self._paper_replay_candles = []
         self._paper_replay_pos = 0
         self._paper_replay_htf_elapsed = 0
@@ -60,11 +62,8 @@ class TradingBot:
         self._last_index_ltp: float | None = None
         self._index_ltp_streak: int = 0
 
-        # HTF score-based exit tracker (Option B)
-        # Watches the next_tf score after entry. Exits only when it has
-        # flipped against the position AND confirmed for 2 consecutive candles.
-        self._exit_score_flip_count: int = 0   # consecutive candles against position
-        self._exit_score_direction: str = ''    # 'CE' or 'PE' — direction at entry
+        # 1min supertrend indicator for exit signals
+        self._1min_supertrend = None  # Will be initialized and warmed up on start
         self._initialize_indicator()
 
     def _set_index_ltp(self, value: float) -> float:
@@ -253,6 +252,100 @@ class TradingBot:
             self._last_mds_candle_ts = None
 
         logger.info(f"[WARMUP] Seeded indicators from MDS history | Candles={len(candles)} Interval={interval}s")
+
+    async def _warmup_1min_supertrend(self) -> None:
+        """Initialize and warm up the 1-minute SuperTrend indicator for exit signals.
+        
+        Fetches recent 1m candles and seeds the 1min supertrend so it's ready to provide
+        exit signals immediately when trading starts.
+        """
+        try:
+            base_url = str(config.get('mds_base_url', '') or '').strip()
+            if not base_url:
+                logger.warning("[WARMUP] 1min SuperTrend: MDS URL not configured")
+                return
+
+            index_name = str(config.get('selected_index', 'NIFTY') or 'NIFTY').strip().upper()
+            
+            # Initialize 1min supertrend with same parameters as entry filter
+            from indicators import SuperTrend
+            self._1min_supertrend = SuperTrend(
+                period=int(config.get('supertrend_period', 7) or 7),
+                multiplier=float(config.get('supertrend_multiplier', 4) or 4)
+            )
+            
+            # Fetch recent 1m candles to warm up the indicator
+            from mds_client import fetch_last_candles
+            candles = await fetch_last_candles(
+                base_url=base_url,
+                symbol=index_name,
+                timeframe_seconds=60,
+                limit=50,  # Enough for warmup
+            )
+            
+            if not candles or len(candles) < 10:
+                logger.warning(f"[WARMUP] 1min SuperTrend: Insufficient candles ({len(candles) if candles else 0}) — waiting for data")
+                return
+            
+            # Feed candles to the indicator
+            for row in candles:
+                try:
+                    high = float(row.get('high') or 0.0)
+                    low = float(row.get('low') or 0.0)
+                    close = float(row.get('close') or 0.0)
+                    if high > 0 and low > 0 and close > 0:
+                        _, signal = self._1min_supertrend.add_candle(high, low, close)
+                except Exception:
+                    continue
+            
+            self._1min_supertrend_ready = True
+            signal = getattr(self._1min_supertrend, 'last_signal', None)
+            logger.info(f"[WARMUP] 1min SuperTrend ready | Initial Signal={signal} | Index={index_name}")
+        except Exception as e:
+            logger.warning(f"[WARMUP] 1min SuperTrend warmup failed: {e}")
+            self._1min_supertrend = None
+            self._1min_supertrend_ready = False
+
+    async def _update_1min_supertrend(self) -> None:
+        """Update 1min SuperTrend indicator with latest 1m candle data from MDS.
+        
+        Called during trading to keep the 1min supertrend signal current for exit decisions.
+        """
+        if not self._1min_supertrend:
+            return
+        
+        try:
+            base_url = str(config.get('mds_base_url', '') or '').strip()
+            if not base_url:
+                return
+
+            index_name = str(config.get('selected_index', 'NIFTY') or 'NIFTY').strip().upper()
+            
+            # Fetch most recent 1m candles (just a few is enough)
+            from mds_client import fetch_last_candles
+            candles = await fetch_last_candles(
+                base_url=base_url,
+                symbol=index_name,
+                timeframe_seconds=60,
+                limit=3,  # Just get latest candles
+            )
+            
+            if not candles:
+                return
+            
+            # Feed the latest candles to update the signal
+            for row in candles:
+                try:
+                    high = float(row.get('high') or 0.0)
+                    low = float(row.get('low') or 0.0)
+                    close = float(row.get('close') or 0.0)
+                    if high > 0 and low > 0 and close > 0:
+                        _, signal = self._1min_supertrend.add_candle(high, low, close)
+                except Exception:
+                    continue
+        except Exception:
+            # Non-critical: log and continue
+            pass
 
     async def _handle_closed_candle(
         self,
@@ -800,6 +893,8 @@ class TradingBot:
         # Skip for dated replay or synthetic paper testing.
         if not replay_enabled:
             await self._seed_indicators_from_mds_history()
+            # Warm up 1min supertrend for exit signals
+            await self._warmup_1min_supertrend()
 
         state_machine.warmed_up()
         self.task = asyncio.create_task(self.run_loop())
@@ -988,10 +1083,6 @@ class TradingBot:
         self.highest_profit = 0
         self.entry_time_utc = None
 
-        # Reset HTF exit tracker
-        self._exit_score_flip_count = 0
-        self._exit_score_direction = ''
-
         state_machine.exit_confirmed()
         try:
             if bool(config.get('pause_mds_on_entry', False)):
@@ -1033,6 +1124,11 @@ class TradingBot:
         htf_high, htf_low, htf_close = 0.0, float('inf'), 0.0
         htf_elapsed_seconds = 0
         htf_candle_number = 0
+        
+        # 1min candle aggregation for SuperTrend exit
+        st_1m_high, st_1m_low, st_1m_close = 0.0, float('inf'), 0.0
+        st_1m_elapsed_seconds = 0
+        st_1m_closed = False
 
         # Make sure TickEngine has the Dhan handle for live quotes
         if self.dhan:
@@ -1153,6 +1249,21 @@ class TradingBot:
                             htf_high, htf_low, htf_close = 0.0, float('inf'), 0.0
                             htf_elapsed_seconds = 0
 
+                    # 1min aggregation for SuperTrend exit signals (replay mode)
+                    st_1m_closed = False
+                    if candle_interval < 60 and self._1min_supertrend and close > 0:
+                        st_1m_high = max(st_1m_high, high)
+                        st_1m_low = min(st_1m_low, low)
+                        st_1m_close = close
+                        st_1m_elapsed_seconds += candle_interval
+                        if st_1m_elapsed_seconds >= 60:
+                            st_1m_closed = True
+                            self._1min_candle_just_closed = True
+                            if st_1m_high > 0 and st_1m_low < float('inf'):
+                                _, signal = self._1min_supertrend.add_candle(st_1m_high, st_1m_low, st_1m_close)
+                            st_1m_high, st_1m_low, st_1m_close = 0.0, float('inf'), 0.0
+                            st_1m_elapsed_seconds = 0
+
                     if high > 0 and low < float('inf'):
                         candle_number += 1
                         await self._handle_closed_candle(
@@ -1228,6 +1339,21 @@ class TradingBot:
                         htf_high, htf_low, htf_close = 0.0, float('inf'), 0.0
                         htf_elapsed_seconds = 0
 
+                # 1min aggregation for SuperTrend exit signals
+                st_1m_closed = False
+                if candle_interval < 60 and self._1min_supertrend:
+                    st_1m_high = max(st_1m_high, high)
+                    st_1m_low = min(st_1m_low, low)
+                    st_1m_close = close
+                    st_1m_elapsed_seconds += candle_interval
+                    if st_1m_elapsed_seconds >= 60:
+                        st_1m_closed = True
+                        self._1min_candle_just_closed = True
+                        if st_1m_high > 0 and st_1m_low < float('inf') and st_1m_close > 0:
+                            _, signal = self._1min_supertrend.add_candle(st_1m_high, st_1m_low, st_1m_close)
+                        st_1m_high, st_1m_low, st_1m_close = 0.0, float('inf'), 0.0
+                        st_1m_elapsed_seconds = 0
+
                 candle_number += 1
                 await self._handle_closed_candle(
                     index_name=index_name,
@@ -1291,65 +1417,41 @@ class TradingBot:
             slope = float(getattr(mds_snapshot, 'slope', 0.0) or 0.0)
             current_ltp = float(bot_state.get('current_option_ltp') or 0.0)
 
-            # Extract HTF score
-            htf_score = 0.0
-            try:
-                tf_scores = getattr(mds_snapshot, 'tf_scores', {}) or {}
-                if isinstance(tf_scores, dict) and tf_scores:
-                    keys = []
-                    for k in tf_scores.keys():
-                        try:
-                            keys.append(int(k))
-                        except Exception:
-                            continue
-                    if keys:
-                        next_tf = max(keys)
-                        next_tf_score = tf_scores.get(str(next_tf)) or tf_scores.get(next_tf)
-                        htf_score = float(getattr(next_tf_score, 'weighted_score', 0.0) or 0.0)
-            except Exception:
-                htf_score = 0.0
-
             # Always log position status — BEFORE min_hold check — so every candle is visible
             held_secs = (datetime.now(timezone.utc) - self.entry_time_utc).total_seconds() if self.entry_time_utc else 0.0
             min_hold = int(config.get('min_hold_seconds', 0) or 0)
             logger.info(
                 f"[POSITION] {position_type} | LTP={current_ltp:.2f} Entry={self.entry_price:.2f} "
                 f"Profit={current_ltp - self.entry_price:.2f} | "
-                f"Score={score:.1f} Slope={slope:.2f} HTF={htf_score:.1f} | "
-                f"Held={held_secs:.0f}s/{min_hold}s FlipCount={self._exit_score_flip_count}"
+                f"Score={score:.1f} Slope={slope:.2f} | "
+                f"Held={held_secs:.0f}s/{min_hold}s"
             )
 
             # Respect min-hold to avoid churn
             if self._min_hold_active():
                 return False
 
-            # ── HTF flip counter: exit after 2 consecutive candles against position ──
-            htf_against = (
-                (position_type == 'CE' and htf_score < -1.0) or
-                (position_type == 'PE' and htf_score >  1.0)
-            )
-
-            if htf_against:
-                self._exit_score_flip_count += 1
-                logger.info(
-                    f"[EXIT_HTF] HTF against position ({self._exit_score_flip_count}/2) | "
-                    f"Position={position_type} HTFScore={htf_score:.2f}"
-                )
-            else:
-                if self._exit_score_flip_count > 0:
-                    logger.info(f"[EXIT_HTF] HTF aligned — reset flip counter (was {self._exit_score_flip_count})")
-                self._exit_score_flip_count = 0
-
-            if self._exit_score_flip_count >= 2 and current_ltp > 0:
-                pnl = (current_ltp - self.entry_price) * qty
-                logger.info(
-                    f"[EXIT_HTF] ✓ Confirmed HTF reversal — closing {position_type} | "
-                    f"HTFScore={htf_score:.2f} | PnL=₹{pnl:.2f}"
-                )
-                self._exit_score_flip_count = 0
-                closed = await self.close_position(current_ltp, pnl, "HTF Score Reversal")
-                if closed:
-                    return True
+            # ── 1min SuperTrend based exit (only on 1min candle close) ──
+            # Exit if 1min supertrend signal is against the position
+            # and we just closed a 1min candle
+            if self._1min_candle_just_closed and self._1min_supertrend:
+                _1m_signal = getattr(self._1min_supertrend, 'last_signal', None)
+                if _1m_signal:
+                    is_exit = (
+                        (position_type == 'CE' and _1m_signal == 'RED') or
+                        (position_type == 'PE' and _1m_signal == 'GREEN')
+                    )
+                    if is_exit and current_ltp > 0:
+                        pnl = (current_ltp - self.entry_price) * qty
+                        logger.info(
+                            f"[EXIT_1MIN_ST] ✓ 1min SuperTrend reversal — closing {position_type} | "
+                            f"Signal={_1m_signal} | PnL=₹{pnl:.2f}"
+                        )
+                        closed = await self.close_position(current_ltp, pnl, "1min SuperTrend Reversal")
+                        if closed:
+                            self._1min_candle_just_closed = False
+                            return True
+                self._1min_candle_just_closed = False
 
         # If still in position after all exit checks → don't run entry logic
         if self.current_position:

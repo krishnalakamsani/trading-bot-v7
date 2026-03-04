@@ -63,7 +63,7 @@ services:
     environment:
       - CORS_ORIGINS=*
       - BOT_MODE=live
-      - AUTO_START_BOT=true
+      - AUTO_START_BOT=false
       - PRUNE_DB_ON_STARTUP=true
       - WS_AUTH_TOKEN=${WS_AUTH_TOKEN:-}
       - MDS_BASE_URL=http://market-data:8002/v1
