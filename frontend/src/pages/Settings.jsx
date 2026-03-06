@@ -72,6 +72,11 @@ const Settings = () => {
     config.min_order_cooldown_seconds || 15
   );
 
+  // Pyramiding parameters
+  const [pyramidingEnabled, setPyramidingEnabled] = useState(config.pyramiding_enabled || false);
+  const [pyramidingMaxLots, setPyramidingMaxLots] = useState(config.pyramiding_max_lots || 2);
+  const [pyramidingMinDropPoints, setPyramidingMinDropPoints] = useState(config.pyramiding_min_drop_points || 10.0);
+
   const normalizedIndicatorType = String(indicatorType || "").trim().toLowerCase();
   const indicatorUsesMacd = normalizedIndicatorType === "score_mds";
   const showFlipAndHtfControls = false;
@@ -132,6 +137,10 @@ const Settings = () => {
       setHtfFilterTimeframe(config?.htf_filter_timeframe || 60);
       setMinHoldSeconds(config?.min_hold_seconds || 15);
       setMinOrderCooldownSeconds(config?.min_order_cooldown_seconds || 15);
+
+      setPyramidingEnabled(config?.pyramiding_enabled || false);
+      setPyramidingMaxLots(config?.pyramiding_max_lots || 2);
+      setPyramidingMinDropPoints(config?.pyramiding_min_drop_points || 10.0);
 
       setPaperReplayEnabled(!!config?.paper_replay_enabled);
       setPaperReplayDateIst(String(config?.paper_replay_date_ist || ""));
@@ -194,6 +203,10 @@ const Settings = () => {
 
       min_hold_seconds: minHoldSeconds,
       min_order_cooldown_seconds: minOrderCooldownSeconds,
+
+      pyramiding_enabled: pyramidingEnabled,
+      pyramiding_max_lots: pyramidingMaxLots,
+      pyramiding_min_drop_points: pyramidingMinDropPoints,
     });
     setSaving(false);
   };
@@ -239,6 +252,10 @@ const Settings = () => {
 
       min_hold_seconds: minHoldSeconds,
       min_order_cooldown_seconds: minOrderCooldownSeconds,
+
+      pyramiding_enabled: pyramidingEnabled,
+      pyramiding_max_lots: pyramidingMaxLots,
+      pyramiding_min_drop_points: pyramidingMinDropPoints,
 
       // Include these so a strategy can fully define the run context
       selected_index: config?.selected_index,
@@ -1048,6 +1065,61 @@ const Settings = () => {
                   data-testid="min-order-cooldown-input"
                 />
                 <p className="text-xs text-gray-500 mt-1">0 = disabled</p>
+              </div>
+            </div>
+
+            <div className="space-y-3 p-4 rounded-md" style={{ background: "var(--bg-inset)", border: "1px solid var(--border)" }}>
+              <div className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>Pyramiding</div>
+
+              <div className="flex items-center justify-between p-3 rounded-md" style={{ background: "var(--bg-card)", border: "1px solid var(--border)" }}>
+                <div>
+                  <Label htmlFor="pyramiding-toggle" className="text-sm font-medium" style={{ color: "var(--text-primary)" }}>
+                    Enable Pyramiding
+                  </Label>
+                  <p className="text-xs" style={{ color: "var(--text-secondary)" }}>Add more lots when price drops</p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-medium text-gray-500">Off</span>
+                  <Switch
+                    id="pyramiding-toggle"
+                    checked={pyramidingEnabled}
+                    onCheckedChange={(checked) => setPyramidingEnabled(checked)}
+                    data-testid="pyramiding-toggle"
+                  />
+                  <span className="text-xs font-medium text-emerald-700">On</span>
+                </div>
+              </div>
+
+              <div>
+                <Label htmlFor="pyramiding-max-lots">Maximum Total Lots</Label>
+                <Input
+                  id="pyramiding-max-lots"
+                  type="number"
+                  min="1"
+                  max="10"
+                  value={pyramidingMaxLots}
+                  onChange={(e) => setPyramidingMaxLots(parseInt(e.target.value) || 2)}
+                  className="mt-1 rounded-sm"
+                  data-testid="pyramiding-max-lots-input"
+                  disabled={!pyramidingEnabled}
+                />
+                <p className="text-xs text-gray-500 mt-1">Total lots across all entries</p>
+              </div>
+
+              <div>
+                <Label htmlFor="pyramiding-min-drop">Minimum Price Drop (%)</Label>
+                <Input
+                  id="pyramiding-min-drop"
+                  type="number"
+                  min="0"
+                  step="0.5"
+                  value={pyramidingMinDropPoints}
+                  onChange={(e) => setPyramidingMinDropPoints(parseFloat(e.target.value) || 10.0)}
+                  className="mt-1 rounded-sm"
+                  data-testid="pyramiding-min-drop-input"
+                  disabled={!pyramidingEnabled}
+                />
+                <p className="text-xs text-gray-500 mt-1">Price drop before adding next lot</p>
               </div>
             </div>
 

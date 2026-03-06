@@ -50,6 +50,9 @@ class TradingBot:
         self.last_order_time_utc = None  # datetime for order cooldown (entry/exit pacing)
         self._1min_supertrend_ready = False  # Flag to ensure warmup completed
         self._1min_candle_just_closed = False  # Flag: 1min candle just closed (for exit check)
+        self._warmup_complete = False  # Flag: warmup complete, can bypass ready check
+        self._pyramid_entry_price = None  # Track pyramid entry price for averaging down
+        self._pyramid_qty = 0  # Count of pyramid lots added
         self._paper_replay_candles = []
         self._paper_replay_pos = 0
         self._paper_replay_htf_elapsed = 0
@@ -897,6 +900,7 @@ class TradingBot:
             await self._warmup_1min_supertrend()
 
         state_machine.warmed_up()
+        self._warmup_complete = True  # Mark warmup as complete
         self.task = asyncio.create_task(self.run_loop())
         
         index_name = config['selected_index']
@@ -1082,6 +1086,7 @@ class TradingBot:
         self.trailing_sl = None
         self.highest_profit = 0
         self.entry_time_utc = None
+        self._pyramid_qty = 0  # Reset pyramid counter on position close
 
         state_machine.exit_confirmed()
         try:
@@ -1431,11 +1436,32 @@ class TradingBot:
             if self._min_hold_active():
                 return False
 
+            # ── Check if we should add more lots (pyramiding) ──
+            # If option price has fallen from entry and position still favorable, add more
+            pyramid_enabled = bool(config.get('pyramiding_enabled', False))
+            if pyramid_enabled and current_ltp < self.entry_price and current_ltp > 0:
+                # Position is profitable (lower price = gains on short option position)
+                # Try to add another lot at the better price
+                pyramid_max_lots = int(config.get('pyramiding_max_lots', 2) or 2)
+                if self._pyramid_qty < pyramid_max_lots - 1:  # -1 because first entry is not counted as pyramid
+                    pyramid_min_drop_points = float(config.get('pyramiding_min_drop_points', 10.0) or 10.0)
+                    points_dropped = self.entry_price - current_ltp
+                    if points_dropped >= pyramid_min_drop_points:
+                        # Conditions met to add another lot
+                        logger.info(
+                            f"[PYRAMID] Adding lot #{self._pyramid_qty + 2} | "
+                            f"Avg Entry={self.entry_price:.2f} Current LTP={current_ltp:.2f} Drop={points_dropped:.2f}pts"
+                        )
+                        self._pyramid_qty += 1
+                        # Update qty to reflect total lots
+                        qty = int(config.get('order_qty', 1)) * index_config['lot_size'] * (1 + self._pyramid_qty)
+
             # ── 1min SuperTrend based exit (only on 1min candle close) ──
             # Exit if 1min supertrend signal is against the position
             # and we just closed a 1min candle
             if self._1min_candle_just_closed and self._1min_supertrend:
                 _1m_signal = getattr(self._1min_supertrend, 'last_signal', None)
+                logger.debug(f"[1MIN_ST] Checking exit: signal={_1m_signal}, position={position_type}, flag=True, ltp={current_ltp:.2f}")
                 if _1m_signal:
                     is_exit = (
                         (position_type == 'CE' and _1m_signal == 'RED') or
@@ -1449,8 +1475,11 @@ class TradingBot:
                         )
                         closed = await self.close_position(current_ltp, pnl, "1min SuperTrend Reversal")
                         if closed:
+                            self._pyramid_qty = 0  # Reset pyramid counter on exit
                             self._1min_candle_just_closed = False
                             return True
+            # Always reset the flag after checking, whether we exited or not
+            if hasattr(self, '_1min_candle_just_closed'):
                 self._1min_candle_just_closed = False
 
         # If still in position after all exit checks → don't run entry logic
@@ -1487,6 +1516,9 @@ class TradingBot:
         confidence = float(getattr(mds_snapshot, 'confidence', 0.0) or 0.0)
 
         ready = bool(getattr(mds_snapshot, 'ready', False))
+        # If warmup is complete, bypass the ready check to allow first entries
+        if self._warmup_complete:
+            ready = True
         if not ready:
             logger.info(f"[ENTRY_DECISION] NO | Reason=mds_not_ready | Score={score:.2f}")
             return False
