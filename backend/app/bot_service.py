@@ -319,6 +319,28 @@ async def update_config_values(updates: dict) -> dict:
         updated_fields.append('bypass_market_hours')
         logger.warning(f"[CONFIG] Bypass market hours: {config['bypass_market_hours']}")
 
+    # Pyramiding configuration
+    if updates.get('pyramiding_enabled') is not None:
+        config['pyramiding_enabled'] = str(updates['pyramiding_enabled']).lower() in ('true', '1', 'yes')
+        updated_fields.append('pyramiding_enabled')
+        logger.info(f"[CONFIG] Pyramiding enabled: {config['pyramiding_enabled']}")
+
+    if updates.get('pyramiding_max_lots') is not None:
+        try:
+            config['pyramiding_max_lots'] = max(1, int(updates['pyramiding_max_lots']))
+            updated_fields.append('pyramiding_max_lots')
+            logger.info(f"[CONFIG] Pyramiding max lots set to: {config['pyramiding_max_lots']}")
+        except (ValueError, TypeError) as e:
+            logger.warning(f"[CONFIG] Invalid value for pyramiding_max_lots: {e}")
+
+    if updates.get('pyramiding_min_drop_points') is not None:
+        try:
+            config['pyramiding_min_drop_points'] = max(0.0, float(updates['pyramiding_min_drop_points']))
+            updated_fields.append('pyramiding_min_drop_points')
+            logger.info(f"[CONFIG] Pyramiding min drop points set to: {config['pyramiding_min_drop_points']}")
+        except (ValueError, TypeError) as e:
+            logger.warning(f"[CONFIG] Invalid value for pyramiding_min_drop_points: {e}")
+
     # (removed)
     # (removed)
     # (removed)
