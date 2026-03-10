@@ -50,6 +50,7 @@ class TradingBot:
         self.last_order_time_utc = None  # datetime for order cooldown (entry/exit pacing)
         self._1min_supertrend_ready = False  # Flag to ensure warmup completed
         self._1min_candle_just_closed = False  # Flag: 1min candle just closed (for exit check)
+        self._1min_last_signal = None  # Store last 1min supertrend signal for exit logic
         self._warmup_complete = False  # Flag: warmup complete, can bypass ready check
         self._pyramid_entry_price = None  # Track pyramid entry price for averaging down
         self._pyramid_qty = 0  # Count of pyramid lots added
@@ -1266,6 +1267,7 @@ class TradingBot:
                             self._1min_candle_just_closed = True
                             if st_1m_high > 0 and st_1m_low < float('inf'):
                                 _, signal = self._1min_supertrend.add_candle(st_1m_high, st_1m_low, st_1m_close)
+                                self._1min_last_signal = signal  # Store signal for exit check
                             st_1m_high, st_1m_low, st_1m_close = 0.0, float('inf'), 0.0
                             st_1m_elapsed_seconds = 0
 
@@ -1356,6 +1358,7 @@ class TradingBot:
                         self._1min_candle_just_closed = True
                         if st_1m_high > 0 and st_1m_low < float('inf') and st_1m_close > 0:
                             _, signal = self._1min_supertrend.add_candle(st_1m_high, st_1m_low, st_1m_close)
+                            self._1min_last_signal = signal  # Store signal for exit check
                         st_1m_high, st_1m_low, st_1m_close = 0.0, float('inf'), 0.0
                         st_1m_elapsed_seconds = 0
 
@@ -1459,8 +1462,8 @@ class TradingBot:
             # ── 1min SuperTrend based exit (only on 1min candle close) ──
             # Exit if 1min supertrend signal is against the position
             # and we just closed a 1min candle
-            if self._1min_candle_just_closed and self._1min_supertrend:
-                _1m_signal = getattr(self._1min_supertrend, 'last_signal', None)
+            if self._1min_candle_just_closed and self._1min_supertrend and self._1min_last_signal:
+                _1m_signal = self._1min_last_signal  # Use stored signal from add_candle()
                 logger.debug(f"[1MIN_ST] Checking exit: signal={_1m_signal}, position={position_type}, flag=True, ltp={current_ltp:.2f}")
                 if _1m_signal:
                     is_exit = (
@@ -1515,10 +1518,8 @@ class TradingBot:
         slope = float(getattr(mds_snapshot, 'slope', 0.0) or 0.0)
         confidence = float(getattr(mds_snapshot, 'confidence', 0.0) or 0.0)
 
-        ready = bool(getattr(mds_snapshot, 'ready', False))
-        # If warmup is complete, bypass the ready check to allow first entries
-        if self._warmup_complete:
-            ready = True
+        # Skip ready check entirely if warmup is complete (indicators are preloaded with history)
+        ready = True if self._warmup_complete else bool(getattr(mds_snapshot, 'ready', False))
         if not ready:
             logger.info(f"[ENTRY_DECISION] NO | Reason=mds_not_ready | Score={score:.2f}")
             return False

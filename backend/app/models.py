@@ -87,6 +87,11 @@ class ConfigUpdate(BaseModel):
     adx_period: Optional[int] = None
     adx_threshold: Optional[float] = None
 
+    # Pyramiding (averaging down)
+    pyramiding_enabled: Optional[bool] = None  # If True: add more lots when price drops
+    pyramiding_max_lots: Optional[int] = None  # Maximum total lots to take (default: 2)
+    pyramiding_min_drop_points: Optional[float] = None  # Minimum price drop before adding lot (default: 10.0)
+
 class BotStatus(BaseModel):
     is_running: bool
     mode: str
